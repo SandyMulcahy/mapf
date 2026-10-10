@@ -24,9 +24,11 @@ src/mapf_gt/
   agents/base.py          interface for decentralised agents
   agents/game_theoretic.py   the algorithm (interface only so far)
   solvers/cbs.py          optimal CBS in pure Python, for small instances
-  solvers/lacam.py        wrapper for a compiled LaCAM binary (untested)
+  solvers/lacam.py        wrapper for the compiled C++ lacam3 (build it first)
+  solvers/pylacam.py      LaCAM* in pure Python (vendored py-lacam, MIT)
   rollout.py              run agents, or replay a plan, inside POGEMA
   validate.py             independent collision and rule checker
+  visualise.py            live matplotlib view of agents moving
   metrics.py              success, sum of costs, makespan
 experiments/              YAML configs, run.py, plot.py
 data/small/               two toy 8x8 maps used by the tests
@@ -49,6 +51,17 @@ tests/
 - **Every result is validated** by `validate.py` before metrics are recorded,
   whichever solver or simulator produced it.
 
+## Solvers
+
+| method    | what it is                         | use it for                          |
+|-----------|------------------------------------|-------------------------------------|
+| `cbs`     | optimal CBS, pure Python            | optimal costs on small instances    |
+| `lacam`   | lacam3, C++ (see `external/`)       | results you report; large instances |
+| `pylacam` | py-lacam by K. Okumura, pure Python | quick checks without building C++   |
+
+Both LaCAMs keep improving their solution until the time limit, so their
+cost depends on it; report the limit alongside the result.
+
 ## Running an experiment
 
 ```
@@ -58,6 +71,27 @@ python experiments/plot.py results/cbs_small.csv
 
 For the real benchmark, run `python data/download.py` and point a config's
 `maps_dir` at the downloaded files.
+
+## Watching agents move
+
+```
+python experiments/visualise.py --map data/small/toy-walls-8.map \
+    --scen data/small/toy-walls-8.scen -k 6 --method cbs
+```
+
+This solves the instance, runs the plan in POGEMA and opens a window showing
+goals, trails and each agent's field of view. Space pauses, the arrow keys
+step one timestep, and Home restarts.
+
+- `--focus 2` draws only agent 2's field of view.
+- `--raw` draws the solver's plan without POGEMA. Use it to debug a solver:
+  conflicts are ringed in red, which POGEMA alone never shows because it
+  blocks colliding moves.
+- `--save run.svg` also writes POGEMA's own animation (`.svg`, `.html`,
+  `.mp4` or `.tex`); add `--focus` for its egocentric view.
+- `--no-show` skips the window, e.g. when only saving.
+
+From Python: `mapf_gt.visualise.show_paths(instance, paths)`.
 
 ## Comparing fairly
 

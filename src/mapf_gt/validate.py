@@ -15,6 +15,7 @@ Following (moving into a cell another agent is leaving) is allowed.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 from .maps.movingai import Cell, Instance
@@ -22,9 +23,59 @@ from .maps.movingai import Cell, Instance
 Path = Sequence[Cell]
 
 
+@dataclass(frozen=True)
+class Conflict:
+    """A collision between two agents.
+
+    For a vertex conflict ``cells`` is the shared cell. For an edge conflict
+    it is ``(from, to)`` for the first agent, who swapped with the second.
+    """
+
+    kind: str  # "vertex" or "edge"
+    agents: tuple[int, int]
+    cells: tuple[Cell, ...]
+    t: int
+
+    def describe(self) -> str:
+        a, b = self.agents
+        if self.kind == "vertex":
+            return f"vertex conflict: agents {a} and {b} at {self.cells[0]}, t={self.t}"
+        frm, to = self.cells
+        return f"edge conflict: agents {a} and {b} swap {frm} and {to}, t={self.t}"
+
+
 def position_at(path: Path, t: int) -> Cell:
     """Where an agent is at time ``t``; it stays at its last cell afterwards."""
     return path[t] if t < len(path) else path[-1]
+
+
+def find_conflicts(paths: Sequence[Path]) -> list[Conflict]:
+    """Every vertex and edge conflict, in time order.
+
+    Agents that have finished stay at their last cell and still collide.
+    """
+    paths = [[tuple(cell) for cell in path] for path in paths]
+    conflicts: list[Conflict] = []
+    horizon = max((len(path) for path in paths), default=0)
+    for t in range(horizon):
+        occupied: dict[Cell, int] = {}
+        for agent, path in enumerate(paths):
+            cell = position_at(path, t)
+            if cell in occupied:
+                conflicts.append(Conflict("vertex", (occupied[cell], agent), (cell,), t))
+            else:
+                occupied[cell] = agent
+        if t == 0:
+            continue
+        for a in range(len(paths)):
+            a_from, a_to = position_at(paths[a], t - 1), position_at(paths[a], t)
+            if a_from == a_to:
+                continue
+            for b in range(a + 1, len(paths)):
+                b_from, b_to = position_at(paths[b], t - 1), position_at(paths[b], t)
+                if a_from == b_to and a_to == b_from:
+                    conflicts.append(Conflict("edge", (a, b), (a_from, a_to), t))
+    return conflicts
 
 
 def find_problems(
@@ -68,33 +119,7 @@ def find_problems(
     if problems:
         return problems  # collision checks are meaningless on broken paths
 
-    paths = [[tuple(cell) for cell in path] for path in paths]
-    horizon = max(len(path) for path in paths)
-    for t in range(horizon):
-        occupied: dict[Cell, int] = {}
-        for agent, path in enumerate(paths):
-            cell = position_at(path, t)
-            if cell in occupied:
-                problems.append(
-                    f"vertex conflict: agents {occupied[cell]} and {agent} "
-                    f"at {cell}, t={t}"
-                )
-            else:
-                occupied[cell] = agent
-        if t == 0:
-            continue
-        for a in range(len(paths)):
-            a_from, a_to = position_at(paths[a], t - 1), position_at(paths[a], t)
-            if a_from == a_to:
-                continue
-            for b in range(a + 1, len(paths)):
-                b_from, b_to = position_at(paths[b], t - 1), position_at(paths[b], t)
-                if a_from == b_to and a_to == b_from:
-                    problems.append(
-                        f"edge conflict: agents {a} and {b} swap "
-                        f"{a_from} and {a_to}, t={t}"
-                    )
-    return problems
+    return [conflict.describe() for conflict in find_conflicts(paths)]
 
 
 def is_valid(instance: Instance, paths: Sequence[Path]) -> bool:

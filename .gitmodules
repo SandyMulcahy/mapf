@@ -1,0 +1,3 @@
+[submodule "external/lacam3"]
+	path = external/lacam3
+	url = https://github.com/Kei18/lacam3

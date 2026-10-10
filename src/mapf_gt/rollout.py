@@ -1,14 +1,17 @@
 """Run agents, or replay a centralised plan, inside POGEMA.
 
-Both functions return trajectories in the same shape as a solver's paths, so
+Both return trajectories in the same shape as a solver's paths, so
 decentralised agents and centralised planners go through the same validator
 and the same metrics.
+
+Pass ``record=True`` to keep POGEMA's animation history, then hand the
+returned environment to ``pogema_adapter.save_animation``.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 from .agents.base import Agent
@@ -23,11 +26,21 @@ class Rollout:
     runtime_s: float  # total time spent inside agents' act()
     steps: int
     reached_goals: bool
+    env: Any = field(default=None, repr=False, compare=False)
+
+
+def _start(instance: Instance, record: bool, env_config: dict):
+    env = make_env(instance, **env_config)
+    if record:
+        env.enable_animation()  # must come before reset()
+    observations, _ = env.reset()
+    return env, observations
 
 
 def run_agents(
     instance: Instance,
     make_agent: Callable[[int], Agent],
+    record: bool = False,
     **env_config: Any,
 ) -> Rollout:
     """Step POGEMA with one agent object per robot until all are at goal.
@@ -35,8 +48,7 @@ def run_agents(
     Stops when every agent is on its goal at the same time, or when POGEMA
     ends the episode (``max_episode_steps``).
     """
-    env = make_env(instance, **env_config)
-    observations, _ = env.reset()
+    env, observations = _start(instance, record, env_config)
     agents = [make_agent(i) for i in range(instance.num_agents)]
     for agent, observation in zip(agents, observations):
         agent.reset(observation)
@@ -58,22 +70,19 @@ def run_agents(
             break
 
     reached = [path[-1] for path in paths] == goals
-    return Rollout(paths, deciding, steps, reached)
+    return Rollout(paths, deciding, steps, reached, env)
 
 
-def replay_plan(
-    instance: Instance, paths: Sequence[Sequence[Cell]], **env_config: Any
-) -> list[list[Cell]]:
-    """Execute a centralised plan in POGEMA and return what actually happened.
-
-    If the returned trajectories differ from ``paths``, the simulator and the
-    planner disagree about the movement rules, and the comparison is not fair
-    until that is resolved.
-    """
+def execute_plan(
+    instance: Instance,
+    paths: Sequence[Sequence[Cell]],
+    record: bool = False,
+    **env_config: Any,
+) -> tuple[list[list[Cell]], Any]:
+    """Execute a centralised plan in POGEMA; return (what happened, env)."""
     horizon = max(len(path) for path in paths)
     env_config.setdefault("max_episode_steps", max(horizon, 1))
-    env = make_env(instance, **env_config)
-    env.reset()
+    env, _ = _start(instance, record, env_config)
     config = env.unwrapped.grid_config
 
     executed = [[cell] for cell in agent_positions(env)]
@@ -85,4 +94,30 @@ def replay_plan(
         env.step(actions)
         for path, cell in zip(executed, agent_positions(env)):
             path.append(cell)
+    return executed, env
+
+
+def replay_plan(
+    instance: Instance, paths: Sequence[Sequence[Cell]], **env_config: Any
+) -> list[list[Cell]]:
+    """Execute a centralised plan in POGEMA and return what actually happened.
+
+    If the returned trajectories differ from ``paths``, the simulator and the
+    planner disagree about the movement rules, and the comparison is not fair
+    until that is resolved.
+    """
+    executed, _ = execute_plan(instance, paths, **env_config)
     return executed
+
+
+def first_divergence(
+    planned: Sequence[Sequence[Cell]], executed: Sequence[Sequence[Cell]]
+) -> tuple[int, int, Cell, Cell] | None:
+    """First (agent, t, planned cell, executed cell) where the two differ."""
+    horizon = max(len(path) for path in [*planned, *executed])
+    for t in range(horizon):
+        for agent, (plan, actual) in enumerate(zip(planned, executed)):
+            want, got = position_at(plan, t), position_at(actual, t)
+            if tuple(want) != tuple(got):
+                return agent, t, tuple(want), tuple(got)
+    return None

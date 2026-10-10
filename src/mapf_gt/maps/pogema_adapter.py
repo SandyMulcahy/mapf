@@ -78,6 +78,30 @@ def action_for_move(grid_config, frm: Cell, to: Cell) -> int:
     return table[delta]
 
 
+def save_animation(env, path, focus: int | None = None, **options: Any) -> None:
+    """Save POGEMA's own animation of a recorded episode.
+
+    The format follows the file extension: .svg, .html, .mp4 (needs
+    ``pip install "pogema[video]"``) or .tex (TikZ, for LaTeX). ``focus``
+    draws the episode from one agent's point of view, with its field of view.
+    The environment must have been run with ``record=True``.
+    """
+    from pathlib import Path
+
+    suffix = Path(path).suffix.lower()
+    savers = {
+        ".svg": "save_animation",
+        ".html": "save_html_animation",
+        ".mp4": "save_video_animation",
+        ".tex": "save_tikz",
+    }
+    if suffix not in savers:
+        raise ValueError(f"can't save {suffix!r}; use one of {sorted(savers)}")
+    if focus is not None:
+        options["egocentric_idx"] = focus
+    getattr(env, savers[suffix])(str(path), **options)
+
+
 def agent_positions(env) -> list[Cell]:
     """Current (row, col) of every agent, in map coordinates.
 
