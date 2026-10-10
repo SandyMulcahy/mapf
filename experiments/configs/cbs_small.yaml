@@ -1,0 +1,15 @@
+# Smoke test: optimal CBS on the toy maps committed under data/small.
+# Runs without POGEMA and finishes in a few seconds.
+name: cbs_small
+maps_dir: data/small
+instances:
+  - {map: toy-empty-8.map, scen: toy-empty-8.scen}
+  - {map: toy-walls-8.map, scen: toy-walls-8.scen}
+agent_counts: [2, 4, 6]
+methods: [cbs]
+time_limit_s: 30
+
+# Passed to POGEMA when a method is a decentralised agent.
+pogema:
+  obs_radius: 5
+  max_episode_steps: 256

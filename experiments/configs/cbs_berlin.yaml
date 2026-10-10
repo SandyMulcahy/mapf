@@ -1,0 +1,16 @@
+# Optimal CBS on two 256x256 city maps from the MovingAI benchmark.
+# Needs the benchmark downloaded first: python data/download.py
+# Map and scen paths are relative to maps_dir.
+name: cbs_berlin
+maps_dir: data/movingai
+instances:
+  - {map: maps/Berlin_1_256.map, scen: scen-random/scen-random/Berlin_1_256-random-1.scen}
+  - {map: maps/Boston_0_256.map, scen: scen-random/scen-random/Boston_0_256-random-1.scen}
+agent_counts: [2, 4, 6]
+methods: [cbs]
+time_limit_s: 60
+
+# Passed to POGEMA when a method is a decentralised agent.
+pogema:
+  obs_radius: 5
+  max_episode_steps: 256

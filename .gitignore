@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Experiment output and downloaded benchmark data
+results/
+data/movingai/
+
+# Built C++ solvers
+external/*/build/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
