@@ -1,8 +1,3 @@
-# mapf-game-theory
-
-A decentralised, game-theoretic algorithm for Multi-Agent Path Finding (MAPF),
-benchmarked against centralised planners on the MovingAI MAPF benchmark.
-
 ## Setup
 
 ```
@@ -11,10 +6,6 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
 ```
-
-The tests in `tests/test_adapter.py` need POGEMA and are skipped without it.
-Everything else (loader, CBS, validator, metrics) runs without POGEMA.
-
 ## Layout
 
 ```
@@ -24,8 +15,7 @@ src/mapf_gt/
   agents/base.py          interface for decentralised agents
   agents/game_theoretic.py   the algorithm (interface only so far)
   solvers/cbs.py          optimal CBS in pure Python, for small instances
-  solvers/lacam.py        wrapper for the compiled C++ lacam3 (build it first)
-  solvers/pylacam.py      LaCAM* in pure Python (vendored py-lacam, MIT)
+  solvers/pylacam.py      wrapper for Python implementation ofLaCAM
   rollout.py              run agents, or replay a plan, inside POGEMA
   validate.py             independent collision and rule checker
   visualise.py            live matplotlib view of agents moving
@@ -33,7 +23,6 @@ src/mapf_gt/
 experiments/              YAML configs, run.py, plot.py
 data/small/               two toy 8x8 maps used by the tests
 data/download.py          fetches the full MovingAI benchmark
-external/                 C++ baselines as git submodules
 tests/
 ```
 
@@ -51,17 +40,6 @@ tests/
 - **Every result is validated** by `validate.py` before metrics are recorded,
   whichever solver or simulator produced it.
 
-## Solvers
-
-| method    | what it is                         | use it for                          |
-|-----------|------------------------------------|-------------------------------------|
-| `cbs`     | optimal CBS, pure Python            | optimal costs on small instances    |
-| `lacam`   | lacam3, C++ (see `external/`)       | results you report; large instances |
-| `pylacam` | py-lacam by K. Okumura, pure Python | quick checks without building C++   |
-
-Both LaCAMs keep improving their solution until the time limit, so their
-cost depends on it; report the limit alongside the result.
-
 ## Running an experiment
 
 ```
@@ -69,14 +47,11 @@ python experiments/run.py experiments/configs/cbs_small.yaml
 python experiments/plot.py results/cbs_small.csv
 ```
 
-For the real benchmark, run `python data/download.py` and point a config's
-`maps_dir` at the downloaded files.
 
 ## Watching agents move
 
 ```
-python experiments/visualise.py --map data/small/toy-walls-8.map \
-    --scen data/small/toy-walls-8.scen -k 6 --method cbs
+python experiments/visualise.py --map data/small/toy-walls-8.map \--scen data/small/toy-walls-8.scen -k 6 --method cbs
 ```
 
 This solves the instance, runs the plan in POGEMA and opens a window showing
@@ -93,9 +68,3 @@ step one timestep, and Home restarts.
 
 From Python: `mapf_gt.visualise.show_paths(instance, paths)`.
 
-## Comparing fairly
-
-The decentralised agents see a local window; CBS and LaCAM see the whole map.
-State the observation radius alongside every result. Per-step decision time
-for decentralised agents is not the same quantity as a centralised planner's
-one-off planning time, so report them separately.
