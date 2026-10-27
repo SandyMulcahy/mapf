@@ -5,6 +5,10 @@ decentralised rollout. On top of the agents it can show their goals, the
 trail behind each one, the local window each agent observes, and any vertex
 or edge conflicts the validator finds.
 
+``AuctionAnimator`` / ``show_run`` draw a bidding-protocol run instead:
+agents coloured by urgency, labelled with their bid each tick, a gold ring
+for agents in the emergency tier, and each tick's payments above the payers.
+
 Keys while the window is open:
     space         pause or play
     left / right  step back or forward one timestep (pauses)
@@ -14,16 +18,21 @@ Keys while the window is open:
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import patheffects
 from matplotlib.animation import FuncAnimation
-from matplotlib.colors import ListedColormap
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.patches import Rectangle
 
 from .maps.movingai import Cell, Instance
 from .validate import Conflict, find_conflicts, position_at
+
+if TYPE_CHECKING:
+    from .rollout import RunResult
 
 # POGEMA's palette, so agents keep the same colour in its exported files.
 POGEMA_COLOURS = (
@@ -31,6 +40,8 @@ POGEMA_COLOURS = (
 )
 OBSTACLE = "#84A1AE"
 CONFLICT = "#e8000b"
+EMERGENCY = "#f5b800"
+PAYMENT = "#7a1f1f"
 
 
 def agent_colour(agent: int) -> str:
@@ -276,3 +287,76 @@ class GridAnimator:
 def show_paths(instance: Instance, paths: Sequence[Sequence[Cell]], **options) -> None:
     """One-line helper: ``show_paths(instance, solution.paths)``."""
     GridAnimator(instance, paths, **options).show()
+
+
+# ---------------------------------------------------------------- auction
+
+
+class AuctionAnimator(GridAnimator):
+    """``GridAnimator`` for a bidding-protocol ``RunResult``.
+
+    Tick k is shown while the animation is between timesteps k and k + 1:
+    the bids, emergency tier and payments that decided that move.
+    """
+
+    def __init__(self, run: "RunResult", *, cmap: str = "viridis", **options):
+        options.setdefault("title", "auction")
+        super().__init__(run.instance, run.paths, **options)
+        self.run = run
+
+        urgency = np.asarray(run.urgencies, dtype=float)
+        low, high = float(urgency.min()), float(urgency.max())
+        norm = Normalize(low, high if high > low else low + 1.0)
+        colour_map = plt.get_cmap(cmap)
+        self.agent_dots.set_facecolors(colour_map(norm(urgency)))
+        self.fig.colorbar(
+            ScalarMappable(norm=norm, cmap=colour_map),
+            ax=self.ax, fraction=0.04, pad=0.02, label="urgency $c_i$",
+        )
+
+        outline = [patheffects.withStroke(linewidth=2, foreground="black")]
+        for label in self.labels:
+            label.set_path_effects(outline)
+
+        self.emergency_rings = self.ax.scatter(
+            [], [], s=max(1.05 * self._cell_pts, 7) ** 2, facecolors="none",
+            edgecolors=EMERGENCY, linewidths=max(1.5, self._cell_pts / 8), zorder=5,
+        )
+        self.payment_texts = [
+            self.ax.text(
+                0, 0, "", ha="center", va="bottom", color=PAYMENT, zorder=7,
+                fontsize=max(5, min(9, self._cell_pts / 3)),
+                path_effects=[patheffects.withStroke(linewidth=2, foreground="white")],
+            )
+            for _ in range(run.instance.num_agents)
+        ]
+
+    def draw_frame(self, frame: int):
+        super().draw_frame(frame)
+        t = self.frame / self.substeps
+        step = int(math.floor(t))
+        tick = self.run.ticks[step] if step < len(self.run.ticks) else None
+        xy = self.positions(t)
+
+        for i, label in enumerate(self.labels):
+            label.set_text(f"{tick.bids[i]:.1f}" if tick else str(i))
+
+        flagged = [xy[i] for i in range(len(xy)) if tick and tick.emergency[i]]
+        self.emergency_rings.set_offsets(np.array(flagged) if flagged else np.empty((0, 2)))
+
+        for i, text in enumerate(self.payment_texts):
+            paid = tick.payments[i] if tick else 0.0
+            text.set_position((xy[i][0], xy[i][1] - 0.45))
+            text.set_text(f"\u2212{paid:.1f}" if paid > 0 else "")
+
+        paid_so_far = sum(sum(k.payments) for k in self.run.ticks[: step + 1])
+        extra = [f"paid {paid_so_far:.1f}"]
+        if tick and any(tick.emergency):
+            extra.append(f"emergency {sum(tick.emergency)}")
+        self.status.set_text("   ".join([self.status.get_text(), *extra]))
+        return []
+
+
+def show_run(run: "RunResult", **options) -> None:
+    """One-line helper: ``show_run(rollout.run_protocol(...))``."""
+    AuctionAnimator(run, **options).show()

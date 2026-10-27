@@ -11,14 +11,22 @@ Rules checked (the standard one-shot MAPF model of Stern et al., 2019):
   * no edge conflict: two agents swapping cells in one step
   * agents stay at their goal after finishing, and still block that cell
 Following (moving into a cell another agent is leaving) is allowed.
+
+For runs of the bidding protocol, ``find_protocol_problems`` also checks the
+protocol's own invariants (range, payments, agreement with centralised PIBT),
+rebuilding everything from the recorded run rather than trusting the runner.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
-from .maps.movingai import Cell, Instance
+from .maps.movingai import Cell, GridMap, Instance
+
+if TYPE_CHECKING:
+    from .rollout import RunResult
 
 Path = Sequence[Cell]
 
@@ -124,3 +132,130 @@ def find_problems(
 
 def is_valid(instance: Instance, paths: Sequence[Path]) -> bool:
     return not find_problems(instance, paths)
+
+
+# --------------------------------------------------------------- protocol
+
+
+def distances_to(grid: GridMap, goal: Cell) -> dict[Cell, int]:
+    """BFS distance from every reachable free cell to ``goal``."""
+    dist = {tuple(goal): 0}
+    queue = deque([tuple(goal)])
+    while queue:
+        cell = queue.popleft()
+        for nxt in grid.neighbours(cell):
+            if nxt not in dist:
+                dist[nxt] = dist[cell] + 1
+                queue.append(nxt)
+    return dist
+
+
+def reference_pibt_step(
+    grid: GridMap,
+    positions: Sequence[Cell],
+    goals: Sequence[Cell],
+    priorities: Sequence,
+    dist_cache: dict[Cell, dict[Cell, int]] | None = None,
+) -> list[Cell]:
+    """One step of centralised PIBT, deterministic, as the protocol must match.
+
+    Same algorithm as the vendored pypibt ``PIBT.step``, but without its
+    random tie-break: candidates are [stay] + ``grid.neighbours(pos)``,
+    stable-sorted by distance to goal. ``priorities`` can be anything
+    comparable (the protocol uses (tier, value, id) tuples); higher plans first.
+    """
+    positions = [tuple(cell) for cell in positions]
+    n = len(positions)
+    cache = dist_cache if dist_cache is not None else {}
+    for goal in goals:
+        if tuple(goal) not in cache:
+            cache[tuple(goal)] = distances_to(grid, goal)
+    unreachable = grid.height * grid.width
+
+    occupied_now = {cell: i for i, cell in enumerate(positions)}
+    occupied_next: dict[Cell, int] = {}
+    nxt: list[Cell | None] = [None] * n
+
+    def plan(i: int) -> bool:
+        dist = cache[tuple(goals[i])]
+        here = positions[i]
+        candidates = sorted(
+            [here, *grid.neighbours(here)], key=lambda v: dist.get(v, unreachable)
+        )
+        for v in candidates:
+            if v in occupied_next:
+                continue
+            j = occupied_now.get(v)
+            if j is not None and nxt[j] == here:  # would swap with j
+                continue
+            nxt[i] = v
+            occupied_next[v] = i
+            if j is not None and j != i and nxt[j] is None and not plan(j):
+                continue  # j failed and now stays on v, so v is taken; try the next cell
+            return True
+        nxt[i] = here
+        occupied_next[here] = i
+        return False
+
+    for i in sorted(range(n), key=lambda i: priorities[i], reverse=True):
+        if nxt[i] is None:
+            plan(i)
+    return [cell for cell in nxt]  # type: ignore[misc]
+
+
+def find_protocol_problems(run: "RunResult", check_pibt: bool = True) -> list[str]:
+    """Every protocol invariant the run breaks. An empty list means it passed.
+
+    Checks, from the recorded run only:
+      * the paths obey the MAPF rules (goals not required if the run timed out)
+      * the protocol did not stall
+      * every message was delivered within ``comm_range``
+      * each agent's reserved cell is where POGEMA actually put it
+        (catches POGEMA silently resolving a collision)
+      * payments are >= 0 and never exceed the bid (individual rationality)
+      * with ``check_pibt``, the reserved cells equal centralised PIBT run
+        with the same priorities
+    """
+    instance = run.instance
+    problems = list(find_problems(instance, run.paths, require_goals=run.reached_goals))
+    if run.stall is not None:
+        problems.append(f"protocol stalled: {run.stall}")
+
+    r = run.config.comm_range
+    dist_cache: dict[Cell, dict[Cell, int]] = {}
+    for k, tick in enumerate(run.ticks):
+        here = [tuple(position_at(path, k)) for path in run.paths]
+        after = [tuple(position_at(path, k + 1)) for path in run.paths]
+
+        if list(map(tuple, tick.positions)) != here:
+            problems.append(f"t={k}: recorded positions differ from the paths")
+
+        for msg in tick.messages:
+            (r0, c0), (r1, c1) = here[msg.sender], here[msg.receiver]
+            if abs(r0 - r1) + abs(c0 - c1) > r:
+                problems.append(
+                    f"t={k}: {msg.kind} from {msg.sender} to {msg.receiver} "
+                    f"is beyond range {r}"
+                )
+
+        for i, (want, got) in enumerate(zip(tick.reserved, after)):
+            if tuple(want) != got:
+                problems.append(f"t={k}: agent {i} reserved {tuple(want)} but is at {got}")
+
+        for i, (paid, bid) in enumerate(zip(tick.payments, tick.bids)):
+            if paid < -1e-9:
+                problems.append(f"t={k}: agent {i} has negative payment {paid}")
+            if paid > bid + 1e-9:
+                problems.append(f"t={k}: agent {i} pays {paid} > its bid {bid}")
+
+        if check_pibt:
+            expected = reference_pibt_step(
+                instance.grid, here, instance.goals, tick.priorities, dist_cache
+            )
+            for i, (want, got) in enumerate(zip(expected, tick.reserved)):
+                if tuple(want) != tuple(got):
+                    problems.append(
+                        f"t={k}: agent {i} reserved {tuple(got)}, centralised PIBT "
+                        f"gives {tuple(want)}"
+                    )
+    return problems

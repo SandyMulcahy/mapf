@@ -10,8 +10,8 @@ venv/
 results/
 data/movingai/
 
-# Built C++ solvers
-external/*/build/
+#Dev help
+COMMANDS.md
 
 # Editors and OS
 .vscode/
