@@ -83,7 +83,8 @@ class Reply(Message):
 
 @dataclass(frozen=True)
 class Done(Message):
-    """Phase 2: broadcast that the sender has reserved ``cell`` for next tick."""
+    """Phase 2: tell a lower-priority neighbour that the sender has finished
+    (reserved ``cell`` for next tick)."""
 
     cell: Cell
 

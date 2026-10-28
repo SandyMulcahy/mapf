@@ -1,4 +1,4 @@
-"""The bidding protocol: decentralised moves must equal centralised PIBT.
+"""The bidding protocol: event-driven decentralised PIBT.
 
 Needs POGEMA; skipped if it is missing.
 """
@@ -38,9 +38,9 @@ def test_scenarios_pass_every_protocol_check(k):
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_dense_random_instances_match_centralised_pibt(seed):
-    # Dense enough for long push chains; reaching goals is not required here,
-    # only that every tick equals centralised PIBT with the same priorities.
+def test_dense_random_instances_are_safe(seed):
+    # Dense enough for long, concurrent push chains; reaching goals is not
+    # required here, only that every protocol check passes.
     grid = load_map(DATA / "toy-walls-8.map")
     free = [(r, c) for r in range(grid.height) for c in range(grid.width) if grid.is_free((r, c))]
     rng = random.Random(seed)
@@ -69,7 +69,49 @@ def test_messages_stay_within_range():
             assert abs(r0 - r1) + abs(c0 - c1) <= 2
 
 
-# ------------------------------------------------- truthful = urgency oracle
+# ---------------------------------------------- event-driven waiting rule
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_agents_wait_for_every_higher_neighbour_unless_pushed(seed):
+    # Checked from the message log alone: before an agent sends anything in
+    # the move phase, it has either been pushed or heard Done from every
+    # neighbour that outranks it.
+    grid = load_map(DATA / "toy-walls-8.map")
+    free = [(r, c) for r in range(grid.height) for c in range(grid.width) if grid.is_free((r, c))]
+    rng = random.Random(seed)
+    instance = Instance(grid, tuple(rng.sample(free, 20)), tuple(rng.sample(free, 20)))
+    result = run(instance, seed=seed)
+    r = result.config.comm_range
+    for tick in result.ticks:
+        pos, prio = tick.positions, tick.priorities
+        n = len(pos)
+        higher = {
+            i: {
+                j for j in range(n)
+                if j != i
+                and abs(pos[i][0] - pos[j][0]) + abs(pos[i][1] - pos[j][1]) <= r
+                and prio[j] > prio[i]
+            }
+            for i in range(n)
+        }
+        heard = {i: set() for i in range(n)}
+        pushed = set()
+        acted = set()
+        for message in tick.messages:
+            if message.kind == "bid":
+                continue
+            sender, receiver = message.sender, message.receiver
+            if sender not in acted and sender not in pushed:
+                assert higher[sender] <= heard[sender], (tick.t, sender)
+            acted.add(sender)
+            if message.kind == "done":
+                heard[receiver].add(sender)
+            elif message.kind == "push":
+                pushed.add(receiver)
+
+
+# ------------------------------------------- reduces to centralised PIBT
 
 
 def oracle_paths(instance, urgencies, max_steps=200, **config):
@@ -83,17 +125,18 @@ def oracle_paths(instance, urgencies, max_steps=200, **config):
 @pytest.mark.parametrize("map_name", ["toy-empty-8", "toy-walls-8"])
 @pytest.mark.parametrize("k", [2, 4, 6, 8])
 @pytest.mark.parametrize("config", [{}, {"alpha": 2.0, "emergency_wait": 5}])
-def test_truthful_run_equals_urgency_pibt(map_name, k, config):
-    # Truthful bids (d = 1) are the true urgencies, so the decentralised
-    # protocol must move exactly like centralised pypibt with those
-    # priorities: same paths, step for step, solved or not.
+def test_whole_map_range_equals_urgency_pibt(map_name, k, config):
+    # With a range covering the whole 8x8 map every agent waits for every
+    # higher-priority agent, so chains run one at a time in priority order:
+    # truthful runs must then move exactly like centralised pypibt with the
+    # true urgencies, step for step, solved or not.
     instance = load_instance(DATA / f"{map_name}.map", DATA / f"{map_name}.scen", k)
     for seed in range(3):
         urgencies = draw_urgencies(k, seed)
         result = run_protocol(
             instance,
             make_bidding_agents(instance, urgencies),
-            config=ProtocolConfig(**config),
+            config=ProtocolConfig(comm_range=14, **config),
             seed=seed,
             max_episode_steps=200,
         )
@@ -102,7 +145,7 @@ def test_truthful_run_equals_urgency_pibt(map_name, k, config):
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_truthful_run_equals_urgency_pibt_when_dense(seed):
+def test_whole_map_range_equals_urgency_pibt_when_dense(seed):
     grid = load_map(DATA / "toy-walls-8.map")
     free = [(r, c) for r in range(grid.height) for c in range(grid.width) if grid.is_free((r, c))]
     rng = random.Random(seed)
@@ -111,8 +154,19 @@ def test_truthful_run_equals_urgency_pibt_when_dense(seed):
     result = run_protocol(
         instance,
         make_bidding_agents(instance, urgencies),
-        config=ProtocolConfig(emergency_wait=6),
+        config=ProtocolConfig(comm_range=14, emergency_wait=6),
         seed=seed,
         max_episode_steps=100,
     )
     assert result.paths == oracle_paths(instance, urgencies, 100, emergency_wait=6)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_divergence_from_centralised_pibt_is_measured(seed):
+    from mapf_gt.validate import pibt_divergence
+
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", 8)
+    result = run(instance, seed=seed)
+    differ, total = pibt_divergence(result)
+    assert total == len(result.ticks) * instance.num_agents
+    assert 0 <= differ <= total

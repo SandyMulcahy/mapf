@@ -5,22 +5,30 @@ POGEMA environment. It never decides anyone's move.
 
 Event ordering for one tick (see ``run_tick``):
 
-1. Bid & reveal: every agent's ``start_tick`` in id order; each Bid is
-   delivered to every agent within ``comm_range``.
-2. Move (event-driven PIBT): repeat until every agent is DONE
-     (A) if a message is pending, deliver the oldest one (FIFO);
-     (B) otherwise activate the runnable agent with the highest
-         ``current_priority``.
-   A Push makes the receiver plan straight away, and a Reply makes the pusher
-   carry on, so one push chain resolves completely (depth first) before the
-   next root starts, exactly as in centralised PIBT.
-   No runnable agent while some are unfinished, a pending push with no
-   messages left, or more than ``activation_cap`` activations, raises
-   ``ProtocolStall`` (a bug, since waiting only ever points to strictly
+1. Bid & reveal: every agent's ``start_tick`` (id order), then every Bid is
+   delivered to the agents within ``comm_range``. From the bids each agent
+   learns which neighbours rank above and below it.
+2. Move (event-driven PIBT): there is no global ordering. A FIFO queue of
+   events is processed one at a time:
+     * at the start, every agent gets a wake-up (id order); an agent that
+       outranks all its neighbours starts planning at once;
+     * a Push makes the receiver plan straight away with the pusher's
+       priority, and a Reply makes the pusher carry on;
+     * when an agent finishes it sends Done to its lower-priority
+       neighbours; an agent starts once it has heard Done from every
+       higher-priority neighbour.
+   Agents in different parts of the map therefore plan concurrently, their
+   messages interleaved in the queue. If the queue empties while some agent
+   has not finished, or there are more than ``activation_cap`` events,
+   ``ProtocolStall`` is raised (a bug: waiting only ever points to strictly
    higher priority).
 3. Execute: collect ``action()`` from every agent, check the moves are
    collision-free (``ProtocolStall`` if not), then ``env.step``.
 4. Pay & update: compute payments from the tick log, call ``end_tick``.
+
+Because chains run concurrently, a tick need not equal centralised PIBT
+with the same priorities; ``validate.pibt_divergence`` measures how often
+it differs.
 """
 
 from __future__ import annotations
@@ -116,14 +124,16 @@ class TickRunner:
         started = time.perf_counter()
         self._begin_tick()
 
-        # Phase 1: bid and reveal.
+        # Phase 1: bid and reveal. Every agent bids before any bid is delivered.
+        bids = []
         for agent in sorted(self.agents, key=lambda a: a.agent_id):
-            bid = agent.start_tick(observations[agent.agent_id], self.context_for(agent.agent_id))
+            bids.append(agent.start_tick(observations[agent.agent_id], self.context_for(agent.agent_id)))
             if tuple(agent.pos) != self._positions[agent.agent_id]:
                 raise ProtocolStall(
                     f"agent {agent.agent_id} thinks it is at {agent.pos}, "
                     f"POGEMA has it at {self._positions[agent.agent_id]}"
                 )
+        for bid in bids:
             self.deliver(bid)
 
         # Phase 2: event-driven PIBT.
@@ -171,31 +181,27 @@ class TickRunner:
         self.reads = 0
 
     def _negotiate(self) -> int:
-        queue: deque[Message] = deque()
-        activations = 0
-        while True:
-            if queue:
-                message = queue.popleft()
+        # Events are messages, or None paired with an agent id for a wake-up.
+        queue: deque[tuple[int | None, Message | None]] = deque(
+            (agent.agent_id, None) for agent in sorted(self.agents, key=lambda a: a.agent_id)
+        )
+        events = 0
+        while queue:
+            woken, message = queue.popleft()
+            if message is None:
+                out = self.agents[woken].on_wake(self.context_for(woken))
+            else:
                 if isinstance(message, Push):
                     self._depth[message.receiver] = self._depth.get(message.sender, 0) + 1
-                queue.extend(self.deliver(message))
-                activations += 1
-            else:
-                unfinished = [a for a in self.agents if a.status != Status.DONE]
-                if not unfinished:
-                    return activations
-                waiting = [a.agent_id for a in unfinished if a.status == Status.AWAITING_REPLY]
-                if waiting:
-                    raise ProtocolStall(f"t={self.t}: agents {waiting} wait for replies that never came")
-                runnable = [a for a in unfinished if a.runnable(self.context_for(a.agent_id))]
-                if not runnable:
-                    ids = [a.agent_id for a in unfinished]
-                    raise ProtocolStall(f"t={self.t}: agents {ids} unfinished but none runnable")
-                root = max(runnable, key=lambda a: a.current_priority)
-                queue.extend(root.step(self.context_for(root.agent_id)))
-                activations += 1
-            if activations > self.config.activation_cap:
-                raise ProtocolStall(f"t={self.t}: more than {self.config.activation_cap} activations")
+                out = self.deliver(message)
+            queue.extend((None, reply) for reply in out)
+            events += 1
+            if events > self.config.activation_cap:
+                raise ProtocolStall(f"t={self.t}: more than {self.config.activation_cap} events")
+        unfinished = [a.agent_id for a in self.agents if a.status != Status.DONE]
+        if unfinished:
+            raise ProtocolStall(f"t={self.t}: no events left but agents {unfinished} have not finished")
+        return events
 
     # --------------------------------------------------------------- helpers
 

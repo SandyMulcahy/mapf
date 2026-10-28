@@ -18,7 +18,7 @@ from mapf_gt.maps import load_instance
 from mapf_gt.metrics import evaluate
 from mapf_gt.protocol import ProtocolConfig
 from mapf_gt.rollout import run_protocol
-from mapf_gt.validate import find_protocol_problems
+from mapf_gt.validate import find_protocol_problems, pibt_divergence
 
 
 def parse_args(argv=None):
@@ -65,6 +65,8 @@ def main(argv=None) -> int:
     print(f"longest push     {max((t.max_push_chain for t in run.ticks), default=0)}")
     print(f"emergency ticks  {run.emergency_firings()}")
     print(f"total paid       {sum(run.total_payments()):.2f}")
+    differ, total = pibt_divergence(run)
+    print(f"differs from PIBT {differ}/{total} moves ({100 * differ / max(total, 1):.2f}%)")
     if run.stall:
         print(f"STALL: {run.stall}")
     print("protocol checks  " + ("passed" if not problems else f"{len(problems)} problems"))

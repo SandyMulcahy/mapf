@@ -60,12 +60,16 @@ tests/
 Each tick, `protocol.TickRunner` runs four phases in order:
 
 1. **Bid and reveal.** Each agent computes its bid and priority
-   `(tier, bid + alpha * wait, id)` and broadcasts it to agents in range.
-2. **Move (event-driven PIBT).** Pending messages are delivered first, in the
-   order they were sent. When none are pending, the runnable agent with the
-   highest priority plans: it reserves a free cell, or pushes the agent on it,
-   which inherits its priority. An agent is runnable once every
-   higher-priority agent in range has finished.
+   `(tier, bid + alpha * wait, id)` and broadcasts it to agents in range, so
+   every agent knows which neighbours rank above and below it.
+2. **Move (event-driven PIBT, no global ordering).** An agent plans as soon as
+   it has heard `Done` from every higher-priority neighbour (straight away if
+   none outranks it). It reserves a free cell, or pushes the agent on it,
+   which inherits its priority and plans at once; when it finishes it sends
+   `Done` to its lower-priority neighbours. Agents in different parts of the
+   map plan concurrently. An agent mid-move in another chain is treated as
+   staying put, and an agent that has not planned yet refuses a push from a
+   chain ranked below it.
 3. **Execute.** The reserved moves are checked for collisions, then POGEMA
    takes one step.
 4. **Pay and update.** Payments are computed from the tick log, and each
@@ -92,16 +96,16 @@ Options: `--seed`, `--range`, `--alpha`, `--emergency W`, `--no-show`.
 - every message stayed within range;
 - each agent ended up where it reserved, which catches POGEMA silently
   resolving a collision;
-- payments are never negative and never exceed the bid;
-- each tick matches centralised PIBT run with the same priorities
-  (`validate.reference_pibt_step`).
+- payments are never negative and never exceed the bid.
 
-For the PIBT check to pass, agents must use the same tie-break as the
-reference: candidates are stay, left, right, up, down (free cells only), stable-sorted
-by distance to goal. This is pypibt's own order with its random shuffle switched
-off, so truthful runs can be compared with `solvers.UrgencyPIBT`, which runs the
-unmodified pypibt `step` with true urgencies as priorities: with truthful bids the
-two give identical paths (`tests/test_protocol.py`).
+Because chains run concurrently, a tick can differ from centralised PIBT with
+the same priorities. `validate.pibt_divergence(run)` measures how often
+(`run_protocol.py` prints it). Agents use pypibt's tie-break with its random
+shuffle switched off: candidates are stay, left, right, up, down (free cells
+only), stable-sorted by distance to goal. `solvers.UrgencyPIBT` runs the
+unmodified pypibt `step` with true urgencies as priorities; when the
+communication range covers the whole map, truthful protocol runs give
+identical paths to it (`tests/test_protocol.py`).
 
 ## Running an experiment
 

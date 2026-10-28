@@ -13,8 +13,9 @@ Rules checked (the standard one-shot MAPF model of Stern et al., 2019):
 Following (moving into a cell another agent is leaving) is allowed.
 
 For runs of the bidding protocol, ``find_protocol_problems`` also checks the
-protocol's own invariants (range, payments, agreement with centralised PIBT),
-rebuilding everything from the recorded run rather than trusting the runner.
+protocol's own invariants (range, payments), rebuilding everything from the
+recorded run rather than trusting the runner. ``pibt_divergence`` measures
+how often its moves differ from centralised PIBT with the same priorities.
 """
 
 from __future__ import annotations
@@ -207,7 +208,7 @@ def reference_pibt_step(
     return [cell for cell in nxt]  # type: ignore[misc]
 
 
-def find_protocol_problems(run: "RunResult", check_pibt: bool = True) -> list[str]:
+def find_protocol_problems(run: "RunResult", check_pibt: bool = False) -> list[str]:
     """Every protocol invariant the run breaks. An empty list means it passed.
 
     Checks, from the recorded run only:
@@ -218,7 +219,9 @@ def find_protocol_problems(run: "RunResult", check_pibt: bool = True) -> list[st
         (catches POGEMA silently resolving a collision)
       * payments are >= 0 and never exceed the bid (individual rationality)
       * with ``check_pibt``, the reserved cells equal centralised PIBT run
-        with the same priorities
+        with the same priorities (off by default: the event-driven protocol
+        runs chains concurrently, so it may legitimately differ; use
+        ``pibt_divergence`` to measure it)
     """
     instance = run.instance
     problems = list(find_problems(instance, run.paths, require_goals=run.reached_goals))
@@ -263,3 +266,22 @@ def find_protocol_problems(run: "RunResult", check_pibt: bool = True) -> list[st
                         f"gives {tuple(want)}"
                     )
     return problems
+
+
+def pibt_divergence(run: "RunResult") -> tuple[int, int]:
+    """(agent-ticks whose move differs from centralised PIBT, total agent-ticks).
+
+    Each tick is compared with ``reference_pibt_step`` from the same positions
+    and priorities, so differences do not accumulate across ticks.
+    """
+    instance = run.instance
+    dist_cache: dict[Cell, dict[Cell, int]] = {}
+    differ = total = 0
+    for tick in run.ticks:
+        expected = reference_pibt_step(
+            instance.grid, tick.positions, instance.goals, tick.priorities, dist_cache
+        )
+        for want, got in zip(expected, tick.reserved):
+            total += 1
+            differ += tuple(want) != tuple(got)
+    return differ, total

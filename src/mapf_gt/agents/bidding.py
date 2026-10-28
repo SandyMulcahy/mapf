@@ -3,17 +3,31 @@
 Driven by ``protocol.TickRunner``, not by ``rollout.run_agents``: each tick
 the runner calls, in order,
 
-    start_tick -> (runnable / step / on_message, repeatedly) -> action -> end_tick
+    start_tick -> on_message(Bid ...) -> on_wake -> (on_message, repeatedly)
+    -> action -> end_tick
 
 Bid: b_i = multiplier * urgency * d_i. For now d_i = 1, so a truthful agent
 (multiplier = 1) bids its urgency. The k-step lookahead for d_i comes later.
 Priority: (tier, b_i + alpha * w_i, id), where tier = 1 once w_i reaches the
 emergency threshold (if one is set).
 
-Move step: decentralised PIBT. The agent tries cells best first; if the cell
-it wants is occupied by an agent that has not planned yet, it reserves the
-cell tentatively and pushes that agent, which inherits its priority and plans
-at once. A valid reply confirms the cell; an invalid one means try the next.
+Move step: event-driven decentralised PIBT, with no global ordering.
+From the bids, the agent learns which neighbours rank above it. It starts
+planning once it has heard Done from all of them (at once, if none rank
+above it). It tries cells best first; if the cell it wants is occupied by an
+agent that has not planned yet, it reserves the cell tentatively and pushes
+that agent, which inherits its priority and plans at once. A valid reply
+confirms the cell; an invalid one means try the next. When it finishes it
+sends Done to every lower-priority neighbour.
+
+Because several push chains can be running at the same time, an agent only
+takes the cell of an agent that is still waiting for a reply if that agent is
+in its own chain (same inherited priority), as in PIBT. If it is in another
+chain, its move is not settled yet, so the cell is skipped. An agent that
+has not planned yet refuses a push from a chain that ranks below its own
+priority (invalid reply), so a lower chain never displaces a higher agent;
+in centralised PIBT that situation cannot arise, because chains start in
+priority order.
 
 Tie-break rule, the same as the vendored pypibt with its shuffle switched
 off (and as ``validate.reference_pibt_step`` and ``solvers.UrgencyPIBT``):
@@ -110,6 +124,8 @@ class BiddingAgent(Agent):
         self.reserved: Cell | None = None
         self.pusher: int | None = None
         self.awaiting: int | None = None
+        self.waiting_for: set[int] = set()  # higher-priority neighbours not yet Done
+        self.lower: set[int] = set()  # lower-priority neighbours, told when I finish
         self.bid = 0.0
 
     @property
@@ -152,6 +168,8 @@ class BiddingAgent(Agent):
         self.reserved = None
         self.pusher = None
         self.awaiting = None
+        self.waiting_for = set()
+        self.lower = set()
 
     # --------------------------------------------------------------- per tick
 
@@ -171,15 +189,13 @@ class BiddingAgent(Agent):
         self.candidates = sorted(pibt_candidates(self.grid, self.pos), key=self.distance)
         return Bid(self.agent_id, None, self.pos, self.goal, self.priority)
 
-    def runnable(self, ctx: Context) -> bool:
-        """Not DONE, not AWAITING_REPLY, and no unfinished agent in range has a
-        higher priority than ``current_priority``."""
-        if self.status != Status.IDLE:
-            return False
-        return not any(
-            view.status != Status.DONE and view.current_priority > self.current_priority
-            for view in ctx.neighbours()
-        )
+    def ready(self) -> bool:
+        """Not yet planned, and every higher-priority neighbour has finished."""
+        return self.status == Status.IDLE and self.reserved is None and not self.waiting_for
+
+    def on_wake(self, ctx: Context) -> list[Message]:
+        """Start of phase 2: plan now if no neighbour ranks above me."""
+        return self.step(ctx) if self.ready() else []
 
     def step(self, ctx: Context) -> list[Message]:
         """Phase 2: one planning attempt (reserve a free cell, or push its occupant)."""
@@ -187,12 +203,20 @@ class BiddingAgent(Agent):
             cell = self.candidates.pop(0)
             if not ctx.cell_free(cell):
                 continue
-            self.reserved = cell
             occupant = ctx.occupant(cell)
+            if occupant is not None and occupant != self.agent_id:
+                other = ctx.view(occupant)
+                if (
+                    other.status == Status.AWAITING_REPLY
+                    and other.current_priority != self.current_priority
+                ):
+                    continue  # mid-move in another chain: it may yet stay put
+                if other.reserved is not None:
+                    self.reserved = cell
+                    return self._finish(valid=True)  # it is moving away
+            self.reserved = cell
             if occupant is None or occupant == self.agent_id:
                 return self._finish(valid=True)
-            if ctx.view(occupant).reserved is not None:
-                return self._finish(valid=True)  # it has already planned elsewhere
             self.status = Status.AWAITING_REPLY
             self.awaiting = occupant
             return [Push(self.agent_id, occupant, self.current_priority)]
@@ -201,16 +225,33 @@ class BiddingAgent(Agent):
 
     def _finish(self, valid: bool) -> list[Message]:
         self.status = Status.DONE
-        out: list[Message] = [Done(self.agent_id, None, self.reserved)]
+        out: list[Message] = [Done(self.agent_id, j, self.reserved) for j in sorted(self.lower)]
         if self.pusher is not None:
             out.append(Reply(self.agent_id, self.pusher, valid))
         return out
 
     def on_message(self, ctx: Context, message: Message) -> list[Message]:
-        """Phase 2: handle a Push (inherit priority) or a Reply (valid / invalid)."""
+        """Bid: note whether the sender ranks above me. Done: one fewer to wait
+        for; plan if that was the last. Push: inherit priority and plan now.
+        Reply: confirm the cell, or try the next one."""
+        if isinstance(message, Bid):
+            if message.priority > self.priority:
+                self.waiting_for.add(message.sender)
+            else:
+                self.lower.add(message.sender)
+            return []
+        if isinstance(message, Done):
+            self.waiting_for.discard(message.sender)
+            return self.step(ctx) if self.ready() else []
         if isinstance(message, Push):
-            if self.status != Status.IDLE or self.reserved is not None:
-                raise RuntimeError(f"agent {self.agent_id} pushed after it had planned")
+            if self.status == Status.DONE:
+                # Planned meanwhile (another chain, or my turn came): the cell is
+                # free for the pusher only if I am leaving it.
+                return [Reply(self.agent_id, message.sender, self.reserved != self.pos)]
+            if self.status == Status.AWAITING_REPLY:
+                return [Reply(self.agent_id, message.sender, False)]  # busy in another chain
+            if self.priority > message.priority:
+                return [Reply(self.agent_id, message.sender, False)]  # I outrank that chain
             self.pusher = message.sender
             self.current_priority = message.priority
             return self.step(ctx)
@@ -222,7 +263,7 @@ class BiddingAgent(Agent):
                 return self._finish(valid=True)
             self.status = Status.IDLE
             return self.step(ctx)  # the pushed agent stays put: try the next cell
-        return []  # Bid and Done carry information only
+        return []
 
     def action(self, ctx: Context) -> int:
         """Phase 3: POGEMA action that moves from ``pos`` to ``reserved``."""

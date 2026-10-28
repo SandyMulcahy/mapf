@@ -9,8 +9,10 @@ two choices made from outside:
 * pypibt's random tie-break shuffle is switched off, so ties keep its
   neighbour order (stay, left, right, up, down).
 
-With truthful bids and d_i = 1, the decentralised bidding protocol should
-produce exactly the same paths (see tests/test_protocol.py).
+With truthful bids and d_i = 1 the decentralised protocol uses the same
+priorities. It produces exactly the same paths when every agent can hear every
+other (communication range covering the map); with a shorter range, chains in
+different places run concurrently and may differ (``validate.pibt_divergence``).
 """
 
 from __future__ import annotations
