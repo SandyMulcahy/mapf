@@ -12,6 +12,8 @@ data/movingai/
 
 #Dev help
 COMMANDS.md
+AI_USAGE.md
+ERRORS.md
 
 # Editors and OS
 .vscode/

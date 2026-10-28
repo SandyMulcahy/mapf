@@ -9,7 +9,8 @@ description = "Decentralised game-theoretic MAPF, benchmarked against centralise
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "pogema>=1.4",
+    # Pinned to the exact commit in use, so every environment runs the same POGEMA (2.0.0a).
+    "pogema @ git+https://github.com/Cognitive-AI-Systems/pogema@91bbceea20ab5e7fbb44727abb00209bbc759147",
     "pyyaml",
 ]
 

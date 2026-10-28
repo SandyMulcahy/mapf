@@ -159,10 +159,11 @@ def reference_pibt_step(
 ) -> list[Cell]:
     """One step of centralised PIBT, deterministic, as the protocol must match.
 
-    Same algorithm as the vendored pypibt ``PIBT.step``, but without its
-    random tie-break: candidates are [stay] + ``grid.neighbours(pos)``,
-    stable-sorted by distance to goal. ``priorities`` can be anything
-    comparable (the protocol uses (tier, value, id) tuples); higher plans first.
+    Same algorithm as the vendored pypibt ``PIBT.step`` with its random
+    shuffle switched off: candidates are [stay, left, right, up, down]
+    (free cells only, pypibt's order), stable-sorted by distance to goal.
+    ``priorities`` can be anything comparable (the protocol uses
+    (tier, value, id) tuples); higher plans first.
     """
     positions = [tuple(cell) for cell in positions]
     n = len(positions)
@@ -179,8 +180,11 @@ def reference_pibt_step(
     def plan(i: int) -> bool:
         dist = cache[tuple(goals[i])]
         here = positions[i]
+        row, col = here
+        around = [(row, col - 1), (row, col + 1), (row - 1, col), (row + 1, col)]
         candidates = sorted(
-            [here, *grid.neighbours(here)], key=lambda v: dist.get(v, unreachable)
+            [here, *(v for v in around if grid.is_free(v))],
+            key=lambda v: dist.get(v, unreachable),
         )
         for v in candidates:
             if v in occupied_next:

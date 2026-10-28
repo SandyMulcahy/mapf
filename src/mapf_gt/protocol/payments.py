@@ -22,8 +22,13 @@ from .tick_runner import ProtocolConfig, TickRecord
 
 
 def critical_bids(record: TickRecord, config: ProtocolConfig) -> list[float]:
-    """Payment owed by each agent for the tick described by ``record``."""
-    raise NotImplementedError
+    """Payment owed by each agent for the tick described by ``record``.
+
+    PLACEHOLDER: everyone pays 0, so the protocol runs and validates while the
+    move step is developed. The mechanism is not truthful until this is
+    replaced by real critical-bid payments.
+    """
+    return [0.0] * len(record.bids)
 
 
 def myerson_payment(bid: float, thresholds: Sequence[tuple[float, float]]) -> float:

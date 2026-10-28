@@ -15,12 +15,13 @@ src/mapf_gt/
   maps/pogema_adapter.py  MovingAI instance -> POGEMA environment
   agents/base.py          interface for decentralised agents
   agents/truthful.py      the game-theoretic agent (interface only)
-  agents/bidding.py       agent for the bidding protocol (stub)
-  protocol/context.py     what an agent may see and send: public view, messages (stub)
-  protocol/tick_runner.py the clock and the radio: event ordering for one tick (stub)
-  protocol/payments.py    per-tick Myerson / critical-bid payments (stub)
+  agents/bidding.py       agent for the bidding protocol (decentralised PIBT)
+  protocol/context.py     what an agent may see and send: public view, messages
+  protocol/tick_runner.py the clock and the radio: event ordering for one tick
+  protocol/payments.py    per-tick payments (placeholder: everyone pays 0)
   solvers/cbs.py          optimal CBS in pure Python, for small instances
   solvers/pibt.py         wrapper for a Python implementation of PIBT
+  solvers/urgency_pibt.py PIBT with true urgencies as priorities (oracle baseline)
   solvers/pylacam.py      wrapper for a Python implementation of LaCAM
   rollout.py              run agents or the protocol, or replay a plan, inside POGEMA
   validate.py             independent collision, rule and protocol checker
@@ -71,8 +72,18 @@ Each tick, `protocol.TickRunner` runs four phases in order:
    agent's waiting count is updated.
 
 The runner only routes messages and keeps time; it never decides a move.
-`TickRunner`, `Context`, `payments` and `BiddingAgent` are currently stubs,
-so `run_protocol` will raise `NotImplementedError` until they are written.
+Current simplifications: the delay in the bid is fixed at 1, so a truthful
+agent bids its urgency, and payments are placeholders (everyone pays 0). The
+mechanism is not truthful until real critical-bid payments replace them.
+
+Run the protocol on one instance, validate it and watch it:
+
+```
+python experiments/run_protocol.py --map data/small/toy-walls-8.map \
+    --scen data/small/toy-walls-8.scen -k 6
+```
+
+Options: `--seed`, `--range`, `--alpha`, `--emergency W`, `--no-show`.
 
 `validate.find_protocol_problems(run)` checks a protocol run from its record:
 
@@ -86,8 +97,11 @@ so `run_protocol` will raise `NotImplementedError` until they are written.
   (`validate.reference_pibt_step`).
 
 For the PIBT check to pass, agents must use the same tie-break as the
-reference: candidates are "stay" followed by `GridMap.neighbours(pos)`,
-stable-sorted by distance to goal.
+reference: candidates are stay, left, right, up, down (free cells only), stable-sorted
+by distance to goal. This is pypibt's own order with its random shuffle switched
+off, so truthful runs can be compared with `solvers.UrgencyPIBT`, which runs the
+unmodified pypibt `step` with true urgencies as priorities: with truthful bids the
+two give identical paths (`tests/test_protocol.py`).
 
 ## Running an experiment
 
