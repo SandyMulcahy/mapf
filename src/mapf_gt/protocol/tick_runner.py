@@ -65,6 +65,11 @@ class ProtocolConfig:
     alpha: float = 1.0  # weight on waiting time in the priority
     emergency_wait: int | None = None  # W*; None disables the emergency tier
     activation_cap: int = 100_000  # per tick, guards against livelock bugs
+    # Heatmap delay d_i (protocol/heatmap_delay.py)
+    delay_horizon: int = 3  # k: steps looked ahead
+    heat_follow_prob: float = 0.8  # p: chance a neighbour follows its shortest path
+    heat_weight: float = 1.0  # lambda: cost per expected agent on a cell
+    min_delay: float = 0.1  # floor on d_i, so an urgency always counts a little
 
 
 @dataclass(frozen=True)
@@ -74,7 +79,8 @@ class TickRecord:
 
     t: int
     positions: tuple[Cell, ...]  # before the move
-    bids: tuple[float, ...]
+    bids: tuple[float, ...]  # reported urgency b_i = m * c_i
+    delays: tuple[float, ...]  # public heatmap delay d_i
     priorities: tuple[Priority, ...]
     emergency: tuple[bool, ...]  # in the emergency tier this tick
     reserved: tuple[Cell, ...]  # cell each agent reserved for the next tick
@@ -152,6 +158,7 @@ class TickRunner:
             t=self.t,
             positions=tuple(self._positions),
             bids=tuple(float(agent.bid) for agent in self.agents),
+            delays=tuple(float(agent.delay) for agent in self.agents),
             priorities=tuple(agent.priority for agent in self.agents),
             emergency=tuple(agent.priority[0] == 1 for agent in self.agents),
             reserved=tuple(reserved),

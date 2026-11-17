@@ -117,9 +117,8 @@ def test_agents_wait_for_every_higher_neighbour_unless_pushed(seed):
 def oracle_paths(instance, urgencies, max_steps=200, **config):
     from mapf_gt.solvers import UrgencyPIBT
 
-    alpha = config.get("alpha", 1.0)
-    emergency = config.get("emergency_wait")
-    return UrgencyPIBT(urgencies, alpha, emergency, max_timestep=max_steps).rollout(instance)
+    config = ProtocolConfig(**{"comm_range": 14, **config})
+    return UrgencyPIBT(urgencies, config, max_timestep=max_steps).rollout(instance)
 
 
 @pytest.mark.parametrize("map_name", ["toy-empty-8", "toy-walls-8"])
@@ -170,3 +169,58 @@ def test_divergence_from_centralised_pibt_is_measured(seed):
     differ, total = pibt_divergence(result)
     assert total == len(result.ticks) * instance.num_agents
     assert 0 <= differ <= total
+
+
+# ------------------------------------------------- delay and eps (Option 1)
+
+
+def test_delay_is_one_on_an_open_path_and_minimal_at_goal():
+    from mapf_gt.protocol.heatmap_delay import heatmap_delay
+
+    grid = load_map(DATA / "toy-empty-8.map")
+    config = ProtocolConfig()
+    assert heatmap_delay(grid, (0, 0), (0, 5), [], config) == pytest.approx(1.0)
+    assert heatmap_delay(grid, (0, 5), (0, 5), [], config) == config.min_delay
+
+
+def test_delay_grows_when_waiting_is_congested(monkeypatch):
+    from mapf_gt.protocol import heatmap_delay as module
+
+    grid = load_map(DATA / "toy-empty-8.map")
+    config = ProtocolConfig()
+    calm = module.heatmap_delay(grid, (0, 0), (0, 5), [], config)
+    # Heat on the agent's own cell at step 1 makes staying, i.e. losing, costlier.
+    monkeypatch.setattr(
+        module, "predict_heatmap", lambda g, n, c: [{(0, 0): 2.0}] + [{} for _ in range(c.delay_horizon - 1)]
+    )
+    assert module.heatmap_delay(grid, (0, 0), (0, 5), [], config) == pytest.approx(calm + 2.0)
+
+
+def test_eps_counts_ticks_since_last_at_goal():
+    grid = load_map(DATA / "toy-empty-8.map")
+    agent = make_bidding_agents(
+        Instance(grid, ((0, 0),), ((0, 2),)), [5.0]
+    )(0)
+    agent.reset({"xy": (0, 0), "target_xy": (0, 2)})
+    agent.end_tick({"xy": (0, 0)}, 0.0)  # waited
+    assert agent.eps == 1
+    agent.end_tick({"xy": (0, 1)}, 0.0)  # closer, but not there: still ageing
+    assert agent.eps == 2
+    agent.end_tick({"xy": (0, 2)}, 0.0)  # at goal
+    assert agent.eps == 0
+    agent.end_tick({"xy": (0, 2)}, 0.0)  # waiting at goal
+    assert agent.eps == 0
+    agent.end_tick({"xy": (1, 2)}, 0.0)  # pushed off goal
+    assert agent.eps == 1
+
+
+def test_truthful_report_is_the_urgency_and_priority_uses_the_delay():
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", 4)
+    urgencies = draw_urgencies(4, 0)
+    result = run(instance)
+    first = result.ticks[0]
+    assert first.bids == pytest.approx(tuple(urgencies))
+    for i in range(4):
+        tier, value, agent_id = first.priorities[i]
+        assert agent_id == i
+        assert value == pytest.approx(first.bids[i] * first.delays[i])  # eps = 0, so b * (d + 0)

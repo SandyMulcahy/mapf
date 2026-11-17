@@ -4,14 +4,16 @@ Centralised, using the vendored pypibt's own ``PIBT.step`` (unmodified) with
 two choices made from outside:
 
 * priorities are the protocol's, computed from TRUE urgencies:
-  (tier, c_i + alpha * w_i, i), where w_i counts consecutive steps not at goal
-  (0 at goal) and tier = 1 once w_i >= emergency_wait;
+  (tier, c_i * (d_i + alpha * eps_i), i), where d_i is the same public heatmap
+  delay the agents compute (``protocol.heatmap_delay``, from the agents within
+  ``comm_range``), eps_i counts timesteps since the agent was last at its goal
+  (0 at the goal), and tier = 1 once eps_i >= emergency_wait;
 * pypibt's random tie-break shuffle is switched off, so ties keep its
   neighbour order (stay, left, right, up, down).
 
-With truthful bids and d_i = 1 the decentralised protocol uses the same
-priorities. It produces exactly the same paths when every agent can hear every
-other (communication range covering the map); with a shorter range, chains in
+With truthful reports the decentralised protocol uses the same priorities. It
+produces exactly the same paths when every agent can hear every other
+(communication range covering the map); with a shorter range, chains in
 different places run concurrently and may differ (``validate.pibt_divergence``).
 """
 
@@ -21,6 +23,8 @@ import time
 from typing import Sequence
 
 from ..maps.movingai import Cell, Instance
+from ..protocol.heatmap_delay import heatmap_delay
+from ..protocol.tick_runner import ProtocolConfig
 from ._pypibt import PIBT as _PIBT
 from .base import Solution, Solver
 
@@ -38,20 +42,34 @@ class UrgencyPIBT(Solver):
     def __init__(
         self,
         urgencies: Sequence[float],
-        alpha: float = 1.0,
-        emergency_wait: int | None = None,
+        config: ProtocolConfig | None = None,
         max_timestep: int = 256,
     ):
         self.urgencies = list(urgencies)
-        self.alpha = alpha
-        self.emergency_wait = emergency_wait
+        self.config = config or ProtocolConfig()
         self.max_timestep = max_timestep
 
-    def priorities(self, waits: Sequence[int]) -> list[tuple[int, float, int]]:
+    def delays(self, instance: Instance, positions: Sequence[Cell]) -> list[float]:
+        """Each agent's heatmap delay, from the agents within ``comm_range``."""
+        r = self.config.comm_range
         out = []
-        for i, (urgency, w) in enumerate(zip(self.urgencies, waits)):
-            emergency = self.emergency_wait is not None and w >= self.emergency_wait
-            out.append((1 if emergency else 0, urgency + self.alpha * w, i))
+        for i, (pos, goal) in enumerate(zip(positions, instance.goals)):
+            neighbours = [
+                (other, instance.goals[j])
+                for j, other in enumerate(positions)
+                if j != i and abs(other[0] - pos[0]) + abs(other[1] - pos[1]) <= r
+            ]
+            out.append(heatmap_delay(instance.grid, pos, goal, neighbours, self.config))
+        return out
+
+    def priorities(
+        self, delays: Sequence[float], eps: Sequence[int]
+    ) -> list[tuple[int, float, int]]:
+        cfg = self.config
+        out = []
+        for i, (urgency, d, e) in enumerate(zip(self.urgencies, delays, eps)):
+            emergency = cfg.emergency_wait is not None and e >= cfg.emergency_wait
+            out.append((1 if emergency else 0, urgency * (d + cfg.alpha * e), i))
         return out
 
     def rollout(self, instance: Instance) -> list[list[Cell]]:
@@ -69,12 +87,14 @@ class UrgencyPIBT(Solver):
         planner.rng = _NoShuffle()
         goals = [tuple(goal) for goal in instance.goals]
         config = [tuple(cell) for cell in instance.starts]
-        waits = [0] * instance.num_agents
+        eps = [0] * instance.num_agents
         configs = [config]
         while config != goals and len(configs) <= self.max_timestep:
-            config = [tuple(int(v) for v in cell) for cell in planner.step(config, self.priorities(waits))]
+            priorities = self.priorities(self.delays(instance, config), eps)
+            nxt = [tuple(int(v) for v in cell) for cell in planner.step(config, priorities)]
+            eps = [0 if new == goal else e + 1 for new, goal, e in zip(nxt, goals, eps)]
+            config = nxt
             configs.append(config)
-            waits = [0 if cell == goal else w + 1 for cell, goal, w in zip(config, goals, waits)]
         return [[c[i] for c in configs] for i in range(instance.num_agents)]
 
     def solve(self, instance: Instance, time_limit_s: float = 30.0) -> Solution | None:

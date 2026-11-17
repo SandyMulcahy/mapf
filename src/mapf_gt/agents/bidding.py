@@ -6,10 +6,14 @@ the runner calls, in order,
     start_tick -> on_message(Bid ...) -> on_wake -> (on_message, repeatedly)
     -> action -> end_tick
 
-Bid: b_i = multiplier * urgency * d_i. For now d_i = 1, so a truthful agent
-(multiplier = 1) bids its urgency. The k-step lookahead for d_i comes later.
-Priority: (tier, b_i + alpha * w_i, id), where tier = 1 once w_i reaches the
-emergency threshold (if one is set).
+Report: b_i = multiplier * urgency, so a truthful agent (multiplier = 1)
+reports its urgency c_i and nothing else.
+Delay: d_i = ``heatmap_delay``, the cost of losing this tick, computed only
+from public information (map, positions and goals within range), so any
+neighbour can recompute it.
+Priority: (tier, b_i * (d_i + alpha * eps_i), id): urgency-weighted ageing.
+eps_i counts timesteps since the agent was last at its goal (0 at the goal);
+tier = 1 once eps_i reaches the emergency threshold (if one is set).
 
 Move step: event-driven decentralised PIBT, with no global ordering.
 From the bids, the agent learns which neighbours rank above it. It starts
@@ -56,6 +60,7 @@ from ..protocol.context import (
     Reply,
     Status,
 )
+from ..protocol.heatmap_delay import heatmap_delay
 from .base import Agent
 
 # pypibt's neighbour order: left, right, up, down, as (d_row, d_col).
@@ -114,7 +119,7 @@ class BiddingAgent(Agent):
 
         # public (read by neighbours through Context)
         self.pos: Cell = self.start
-        self.w = 0
+        self.eps = 0
         self.priority: Priority | None = None
         self.current_priority: Priority | None = None
 
@@ -127,6 +132,7 @@ class BiddingAgent(Agent):
         self.waiting_for: set[int] = set()  # higher-priority neighbours not yet Done
         self.lower: set[int] = set()  # lower-priority neighbours, told when I finish
         self.bid = 0.0
+        self.delay = 1.0
 
     @property
     def strategy(self) -> str:
@@ -143,7 +149,7 @@ class BiddingAgent(Agent):
     # ------------------------------------------------------------ per episode
 
     def reset(self, observation: Any) -> None:
-        """Work out how observation coordinates map onto the map; w = 0, total_paid = 0.
+        """Work out how observation coordinates map onto the map; eps = 0, total_paid = 0.
 
         POGEMA's ``POMAPF`` observation gives ``xy`` relative to the start in
         some versions; the offset makes this work either way, and the goal
@@ -158,7 +164,7 @@ class BiddingAgent(Agent):
                 f"expected {self.goal}; check POGEMA's coordinate convention"
             )
         self.pos = self.start
-        self.w = 0
+        self.eps = 0
         self.total_paid = 0.0
         self._clear_tick()
 
@@ -179,15 +185,27 @@ class BiddingAgent(Agent):
         self.pos = self._to_map(observation["xy"])
         self._clear_tick()
 
-        delay = 1.0  # d_i; replace with the k-step lookahead
-        self.bid = self.multiplier * self.urgency * delay
+        #§ This is the bid calculation
+
+        #b_i = c_i * truthful multiplier
+        self.bid = self.multiplier * self.urgency
+        #d_i calculated by public info heatmap
+        self.delay = heatmap_delay(
+            self.grid, self.pos, self.goal,
+            [(v.pos, v.goal) for v in ctx.neighbours()],
+            ctx.config,
+        )
+
         config = ctx.config
-        emergency = config.emergency_wait is not None and self.w >= config.emergency_wait
-        self.priority = (1 if emergency else 0, self.bid + config.alpha * self.w, self.agent_id)
+        emergency = config.emergency_wait is not None and self.eps >= config.emergency_wait
+        self.priority = (1 if emergency else 0, self.bid * (self.delay + config.alpha * self.eps), self.agent_id)
         self.current_priority = self.priority
 
         self.candidates = sorted(pibt_candidates(self.grid, self.pos), key=self.distance)
-        return Bid(self.agent_id, None, self.pos, self.goal, self.priority)
+        return Bid(
+            self.agent_id, None, self.pos, self.goal, self.priority,
+            bid=self.bid, delay=self.delay, eps=self.eps,
+        )
 
     def ready(self) -> bool:
         """Not yet planned, and every higher-priority neighbour has finished."""
@@ -271,10 +289,11 @@ class BiddingAgent(Agent):
         return ctx.moves[delta]
 
     def end_tick(self, observation: Any, payment: float) -> None:
-        """Phase 4: update position, add payment, w += 1 (or 0 at goal)."""
+        """Phase 4: update position, add payment, update eps: 0 at the goal,
+        otherwise eps + 1 (timesteps since last at goal, PIBT-style ageing)."""
         self.total_paid += payment
         self.pos = self._to_map(observation["xy"])
-        self.w = 0 if self.pos == self.goal else self.w + 1
+        self.eps = 0 if self.pos == self.goal else self.eps + 1
 
     def public_view(self) -> PublicView:
         """What the runner shows neighbours through ``Context``."""
@@ -282,7 +301,7 @@ class BiddingAgent(Agent):
             id=self.agent_id,
             pos=self.pos,
             goal=self.goal,
-            w=self.w,
+            eps=self.eps,
             priority=self.priority,
             current_priority=self.current_priority,
             status=self.status,

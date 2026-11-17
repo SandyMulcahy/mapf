@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from .tick_runner import TickRunner
 
 # (tier, value, agent_id), compared lexicographically, higher wins.
-# tier = 1 for the emergency tier (w_i >= W*), else 0; value = b_i + alpha * w_i.
+# tier = 1 for the emergency tier (eps_i >= W*), else 0;
+# value = b_i * (d_i + alpha * eps_i).
 Priority = tuple[int, float, int]
 
 
@@ -40,7 +41,7 @@ class PublicView:
     id: int
     pos: Cell
     goal: Cell
-    w: int  # consecutive ticks not at goal
+    eps: int  # timesteps since the agent was last at its goal (0 at goal)
     priority: Priority  # own priority this tick
     current_priority: Priority  # own, or inherited from a pusher
     status: Status
@@ -60,11 +61,19 @@ class Message:
 
 @dataclass(frozen=True)
 class Bid(Message):
-    """Phase 1: announce position, goal and priority to everyone in range."""
+    """Phase 1: announce position, goal and priority to everyone in range.
+
+    ``bid``, ``delay`` and ``eps`` let a receiver recompute
+    ``priority``; ``delay`` is public, so a receiver could also recompute it
+    with ``heatmap_delay`` from what it can see.
+    """
 
     pos: Cell
     goal: Cell
     priority: Priority
+    bid: float = 0.0
+    delay: float = 1.0
+    eps: int = 0
 
 
 @dataclass(frozen=True)
@@ -107,7 +116,7 @@ class MessageLog:
 def payload_size(message: Message) -> int:
     """Number of scalar values a message carries, for communication metrics."""
     if isinstance(message, Bid):
-        return 2 + 2 + 3  # pos, goal, priority
+        return 2 + 2 + 3 + 3  # pos, goal, priority, bid / delay / eps
     if isinstance(message, Push):
         return 3  # priority
     if isinstance(message, Done):

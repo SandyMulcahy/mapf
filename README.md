@@ -59,9 +59,13 @@ tests/
 
 Each tick, `protocol.TickRunner` runs four phases in order:
 
-1. **Bid and reveal.** Each agent computes its bid and priority
-   `(tier, bid + alpha * wait, id)` and broadcasts it to agents in range, so
-   every agent knows which neighbours rank above and below it.
+1. **Bid and reveal.** Each agent reports its urgency (`b = m * c`, with
+   `m = 1` when truthful) and computes its public delay `d` with
+   `protocol/heatmap_delay.py` (the cost of losing this tick, from positions
+   and goals in range). Its priority is `(tier, b * (d + alpha * eps), id)`
+   (urgency-weighted ageing), where `eps` counts timesteps since it was last
+   at its goal (0 at the goal). It broadcasts these to agents in range, so every agent knows which
+   neighbours rank above and below it.
 2. **Move (event-driven PIBT, no global ordering).** An agent plans as soon as
    it has heard `Done` from every higher-priority neighbour (straight away if
    none outranks it). It reserves a free cell, or pushes the agent on it,
@@ -73,11 +77,12 @@ Each tick, `protocol.TickRunner` runs four phases in order:
 3. **Execute.** The reserved moves are checked for collisions, then POGEMA
    takes one step.
 4. **Pay and update.** Payments are computed from the tick log, and each
-   agent's waiting count is updated.
+   agent's `eps` is updated.
 
 The runner only routes messages and keeps time; it never decides a move.
-Current simplifications: the delay in the bid is fixed at 1, so a truthful
-agent bids its urgency, and payments are placeholders (everyone pays 0). The
+Current simplifications: the heatmap prediction is a placeholder (no
+congestion predicted, so `d` is the plain one-step cost of waiting), and
+payments are placeholders (everyone pays 0). The
 mechanism is not truthful until real critical-bid payments replace them.
 
 Run the protocol on one instance, validate it and watch it:
