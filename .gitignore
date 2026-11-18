@@ -11,6 +11,9 @@ results/
 data/movingai/
 
 #Dev help
+docs/
+CLAUDE.md
+CLAUDE.local.md
 COMMANDS.md
 AI_USAGE.md
 ERRORS.md

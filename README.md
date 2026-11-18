@@ -18,6 +18,8 @@ src/mapf_gt/
   agents/bidding.py       agent for the bidding protocol (decentralised PIBT)
   protocol/context.py     what an agent may see and send: public view, messages
   protocol/tick_runner.py the clock and the radio: event ordering for one tick
+  protocol/priority.py    priority and ageing rules (default: rule E), shared with the oracle
+  protocol/heatmap_delay.py public delay d_i from a heatmap (prediction is a placeholder)
   protocol/payments.py    per-tick payments (placeholder: everyone pays 0)
   solvers/cbs.py          optimal CBS in pure Python, for small instances
   solvers/pibt.py         wrapper for a Python implementation of PIBT
@@ -28,9 +30,9 @@ src/mapf_gt/
   visualise.py            live matplotlib view of agents moving, with an auction view
   metrics.py              success, sum of costs, makespan
   evolution.py            evolutionary strategy experiments (not implemented yet)
-experiments/              YAML configs, run.py, plot.py
+experiments/              YAML configs, run.py, plot.py, run_protocol.py, compare_rules.py
+docs/                     project plan, report outline, literature notes, handover
 data/small/               two toy 8x8 maps used by the tests
-data/download.py          fetches the full MovingAI benchmark
 tests/
 ```
 

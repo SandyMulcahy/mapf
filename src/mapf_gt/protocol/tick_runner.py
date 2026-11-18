@@ -70,6 +70,10 @@ class ProtocolConfig:
     heat_follow_prob: float = 0.8  # p: chance a neighbour follows its shortest path
     heat_weight: float = 1.0  # lambda: cost per expected agent on a cell
     min_delay: float = 0.1  # floor on d_i, so an urgency always counts a little
+    # Priority and ageing rules (protocol/priority.py). Defaults are rule E.
+    priority_rule: str = "weighted"  # "weighted": b*(d + alpha*age); "additive": b*d + alpha*age
+    age_rule: str = "since_goal"  # "since_goal": +1 each tick away from goal; "since_progress": also 0 when closer
+    emergency_counter: str = "age"  # emergency tier checks "age" or "since_goal"
 
 
 @dataclass(frozen=True)

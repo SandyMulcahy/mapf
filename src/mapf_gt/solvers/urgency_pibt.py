@@ -3,7 +3,8 @@
 Centralised, using the vendored pypibt's own ``PIBT.step`` (unmodified) with
 two choices made from outside:
 
-* priorities are the protocol's, computed from TRUE urgencies:
+* priorities are the protocol's (``protocol/priority.py``, so the same
+  rule switches apply), computed from TRUE urgencies. With the defaults:
   (tier, c_i * (d_i + alpha * eps_i), i), where d_i is the same public heatmap
   delay the agents compute (``protocol.heatmap_delay``, from the agents within
   ``comm_range``), eps_i counts timesteps since the agent was last at its goal
@@ -23,7 +24,8 @@ import time
 from typing import Sequence
 
 from ..maps.movingai import Cell, Instance
-from ..protocol.heatmap_delay import heatmap_delay
+from ..protocol.heatmap_delay import distances_to, heatmap_delay
+from ..protocol.priority import next_age, next_since_goal, priority
 from ..protocol.tick_runner import ProtocolConfig
 from ._pypibt import PIBT as _PIBT
 from .base import Solution, Solver
@@ -63,14 +65,16 @@ class UrgencyPIBT(Solver):
         return out
 
     def priorities(
-        self, delays: Sequence[float], eps: Sequence[int]
+        self,
+        delays: Sequence[float],
+        eps: Sequence[int],
+        since_goal: Sequence[int] | None = None,
     ) -> list[tuple[int, float, int]]:
-        cfg = self.config
-        out = []
-        for i, (urgency, d, e) in enumerate(zip(self.urgencies, delays, eps)):
-            emergency = cfg.emergency_wait is not None and e >= cfg.emergency_wait
-            out.append((1 if emergency else 0, urgency * (d + cfg.alpha * e), i))
-        return out
+        since_goal = since_goal if since_goal is not None else eps
+        return [
+            priority(urgency, d, e, g, i, self.config)
+            for i, (urgency, d, e, g) in enumerate(zip(self.urgencies, delays, eps, since_goal))
+        ]
 
     def rollout(self, instance: Instance) -> list[list[Cell]]:
         """Run until every agent is at its goal or ``max_timestep`` steps pass.
@@ -87,12 +91,19 @@ class UrgencyPIBT(Solver):
         planner.rng = _NoShuffle()
         goals = [tuple(goal) for goal in instance.goals]
         config = [tuple(cell) for cell in instance.starts]
+        dist = [distances_to(instance.grid, goal) for goal in goals]
+        far = instance.grid.height * instance.grid.width
         eps = [0] * instance.num_agents
+        since_goal = [0] * instance.num_agents
         configs = [config]
         while config != goals and len(configs) <= self.max_timestep:
-            priorities = self.priorities(self.delays(instance, config), eps)
+            priorities = self.priorities(self.delays(instance, config), eps, since_goal)
             nxt = [tuple(int(v) for v in cell) for cell in planner.step(config, priorities)]
-            eps = [0 if new == goal else e + 1 for new, goal, e in zip(nxt, goals, eps)]
+            eps = [
+                next_age(e, new == goal, d.get(new, far) < d.get(old, far), self.config)
+                for old, new, goal, d, e in zip(config, nxt, goals, dist, eps)
+            ]
+            since_goal = [next_since_goal(g, new == goal) for new, goal, g in zip(nxt, goals, since_goal)]
             config = nxt
             configs.append(config)
         return [[c[i] for c in configs] for i in range(instance.num_agents)]

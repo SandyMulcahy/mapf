@@ -61,6 +61,8 @@ from ..protocol.context import (
     Status,
 )
 from ..protocol.heatmap_delay import heatmap_delay
+from ..protocol.priority import next_age, next_since_goal, priority
+from ..protocol.tick_runner import ProtocolConfig
 from .base import Agent
 
 # pypibt's neighbour order: left, right, up, down, as (d_row, d_col).
@@ -116,10 +118,12 @@ class BiddingAgent(Agent):
         self._dist = _distances_to(grid, self.goal)
         self._unreachable = grid.height * grid.width
         self._offset = (0, 0)  # map cell = observation xy + offset
+        self._config = None  # ProtocolConfig, set each tick by start_tick
 
         # public (read by neighbours through Context)
         self.pos: Cell = self.start
         self.eps = 0
+        self.since_goal = 0  # used only if the emergency tier counts it
         self.priority: Priority | None = None
         self.current_priority: Priority | None = None
 
@@ -165,6 +169,7 @@ class BiddingAgent(Agent):
             )
         self.pos = self.start
         self.eps = 0
+        self.since_goal = 0
         self.total_paid = 0.0
         self._clear_tick()
 
@@ -184,6 +189,7 @@ class BiddingAgent(Agent):
         the candidate list. Returns the Bid broadcast."""
         self.pos = self._to_map(observation["xy"])
         self._clear_tick()
+        self._config = ctx.config  # end_tick has no context; the age rule lives here
 
         #§ This is the bid calculation
 
@@ -196,9 +202,10 @@ class BiddingAgent(Agent):
             ctx.config,
         )
 
-        config = ctx.config
-        emergency = config.emergency_wait is not None and self.eps >= config.emergency_wait
-        self.priority = (1 if emergency else 0, self.bid * (self.delay + config.alpha * self.eps), self.agent_id)
+        #P_i = b_i * (d_i + alpha * eps_i) under the default rule E (protocol/priority.py)
+        self.priority = priority(
+            self.bid, self.delay, self.eps, self.since_goal, self.agent_id, ctx.config
+        )
         self.current_priority = self.priority
 
         self.candidates = sorted(pibt_candidates(self.grid, self.pos), key=self.distance)
@@ -289,11 +296,16 @@ class BiddingAgent(Agent):
         return ctx.moves[delta]
 
     def end_tick(self, observation: Any, payment: float) -> None:
-        """Phase 4: update position, add payment, update eps: 0 at the goal,
-        otherwise eps + 1 (timesteps since last at goal, PIBT-style ageing)."""
+        """Phase 4: update position, add payment, update eps with the configured
+        age rule (default: 0 at the goal, otherwise eps + 1)."""
         self.total_paid += payment
+        before = self.distance(self.pos)
         self.pos = self._to_map(observation["xy"])
-        self.eps = 0 if self.pos == self.goal else self.eps + 1
+        at_goal = self.pos == self.goal
+        got_closer = self.distance(self.pos) < before
+        config = self._config or ProtocolConfig()  # defaults if no tick has run yet
+        self.eps = next_age(self.eps, at_goal, got_closer, config)
+        self.since_goal = next_since_goal(self.since_goal, at_goal)
 
     def public_view(self) -> PublicView:
         """What the runner shows neighbours through ``Context``."""

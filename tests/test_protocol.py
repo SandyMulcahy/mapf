@@ -224,3 +224,54 @@ def test_truthful_report_is_the_urgency_and_priority_uses_the_delay():
         tier, value, agent_id = first.priorities[i]
         assert agent_id == i
         assert value == pytest.approx(first.bids[i] * first.delays[i])  # eps = 0, so b * (d + 0)
+
+
+# ------------------------------------------- priority rules (protocol/priority.py)
+
+RULE_A = {"priority_rule": "additive", "age_rule": "since_progress", "emergency_wait": 5}
+RULE_D = {"priority_rule": "additive", "age_rule": "since_progress",
+          "emergency_wait": 20, "emergency_counter": "since_goal"}
+
+
+def test_default_rule_is_urgency_weighted_ageing():
+    from mapf_gt.protocol.priority import priority
+
+    config = ProtocolConfig(alpha=0.5)
+    assert priority(4.0, 1.0, 6, 6, 3, config) == (0, 4.0 * (1.0 + 0.5 * 6), 3)
+    additive = ProtocolConfig(alpha=0.5, priority_rule="additive")
+    assert priority(4.0, 1.0, 6, 6, 3, additive) == (0, 4.0 * 1.0 + 0.5 * 6, 3)
+
+
+def test_emergency_tier_can_count_ticks_since_goal():
+    from mapf_gt.protocol.priority import priority
+
+    config = ProtocolConfig(emergency_wait=10, emergency_counter="since_goal")
+    assert priority(1.0, 1.0, 0, 10, 0, config)[0] == 1  # age reset, but stuck 10 ticks
+    assert priority(1.0, 1.0, 10, 9, 0, config)[0] == 0
+
+
+def test_since_progress_age_resets_when_closer():
+    grid = load_map(DATA / "toy-empty-8.map")
+    agent = make_bidding_agents(Instance(grid, ((0, 0),), ((0, 2),)), [5.0])(0)
+    agent.reset({"xy": (0, 0), "target_xy": (0, 2)})
+    agent._config = ProtocolConfig(age_rule="since_progress")
+    agent.end_tick({"xy": (0, 0)}, 0.0)  # waited
+    assert (agent.eps, agent.since_goal) == (1, 1)
+    agent.end_tick({"xy": (0, 1)}, 0.0)  # closer: age resets, since_goal does not
+    assert (agent.eps, agent.since_goal) == (0, 2)
+
+
+@pytest.mark.parametrize("rule", [RULE_A, RULE_D], ids=["A", "D"])
+@pytest.mark.parametrize("k", [4, 8])
+def test_whole_map_range_equals_urgency_pibt_for_other_rules(rule, k):
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", k)
+    for seed in range(3):
+        urgencies = draw_urgencies(k, seed)
+        result = run_protocol(
+            instance,
+            make_bidding_agents(instance, urgencies),
+            config=ProtocolConfig(comm_range=14, **rule),
+            seed=seed,
+            max_episode_steps=200,
+        )
+        assert result.paths == oracle_paths(instance, urgencies, 200, **rule)
