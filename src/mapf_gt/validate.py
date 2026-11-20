@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 from .maps.movingai import Cell, GridMap, Instance
+from .protocol.tiebreak import tiebreak_permutation
 
 if TYPE_CHECKING:
     from .rollout import RunResult
@@ -157,6 +158,8 @@ def reference_pibt_step(
     goals: Sequence[Cell],
     priorities: Sequence,
     dist_cache: dict[Cell, dict[Cell, int]] | None = None,
+    t: int = 0,
+    config=None,
 ) -> list[Cell]:
     """One step of centralised PIBT, deterministic, as the protocol must match.
 
@@ -164,7 +167,9 @@ def reference_pibt_step(
     shuffle switched off: candidates are [stay, left, right, up, down]
     (free cells only, pypibt's order), stable-sorted by distance to goal.
     ``priorities`` can be anything comparable (the protocol uses
-    (tier, value, id) tuples); higher plans first.
+    (tier, value, id) tuples); higher plans first. With a ``config`` whose
+    ``random_tiebreak`` is on, candidates are first shuffled with the
+    protocol's keyed permutation for tick ``t`` (``protocol/tiebreak.py``).
     """
     positions = [tuple(cell) for cell in positions]
     n = len(positions)
@@ -183,10 +188,11 @@ def reference_pibt_step(
         here = positions[i]
         row, col = here
         around = [(row, col - 1), (row, col + 1), (row - 1, col), (row + 1, col)]
-        candidates = sorted(
-            [here, *(v for v in around if grid.is_free(v))],
-            key=lambda v: dist.get(v, unreachable),
-        )
+        candidates = [here, *(v for v in around if grid.is_free(v))]
+        if config is not None:
+            order = tiebreak_permutation(len(candidates), t, i, config)
+            candidates = [candidates[k] for k in order]
+        candidates = sorted(candidates, key=lambda v: dist.get(v, unreachable))
         for v in candidates:
             if v in occupied_next:
                 continue
@@ -257,7 +263,7 @@ def find_protocol_problems(run: "RunResult", check_pibt: bool = False) -> list[s
 
         if check_pibt:
             expected = reference_pibt_step(
-                instance.grid, here, instance.goals, tick.priorities, dist_cache
+                instance.grid, here, instance.goals, tick.priorities, dist_cache, tick.t, run.config
             )
             for i, (want, got) in enumerate(zip(expected, tick.reserved)):
                 if tuple(want) != tuple(got):
@@ -279,7 +285,8 @@ def pibt_divergence(run: "RunResult") -> tuple[int, int]:
     differ = total = 0
     for tick in run.ticks:
         expected = reference_pibt_step(
-            instance.grid, tick.positions, instance.goals, tick.priorities, dist_cache
+            instance.grid, tick.positions, instance.goals, tick.priorities, dist_cache,
+            tick.t, run.config,
         )
         for want, got in zip(expected, tick.reserved):
             total += 1

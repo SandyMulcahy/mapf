@@ -67,13 +67,17 @@ class ProtocolConfig:
     activation_cap: int = 100_000  # per tick, guards against livelock bugs
     # Heatmap delay d_i (protocol/heatmap_delay.py)
     delay_horizon: int = 3  # k: steps looked ahead
-    heat_follow_prob: float = 0.8  # p: chance a neighbour follows its shortest path
+    heat_model: str = "none"  # "none": no heat; "symmetric": uniform moves (Keskin); "goal": follow shortest path w.p. p
+    heat_follow_prob: float = 0.8  # p: chance a neighbour follows its shortest path ("goal" only)
     heat_weight: float = 1.0  # lambda: cost per expected agent on a cell
     min_delay: float = 0.1  # floor on d_i, so an urgency always counts a little
     # Priority and ageing rules (protocol/priority.py). Defaults are rule E.
     priority_rule: str = "weighted"  # "weighted": b*(d + alpha*age); "additive": b*d + alpha*age
     age_rule: str = "since_goal"  # "since_goal": +1 each tick away from goal; "since_progress": also 0 when closer
     emergency_counter: str = "age"  # emergency tier checks "age" or "since_goal"
+    # Tie-break between equally short cells (protocol/tiebreak.py).
+    random_tiebreak: bool = False  # False: pypibt order; True: shuffled per (seed, tick, agent)
+    tiebreak_seed: int = 0
 
 
 @dataclass(frozen=True)

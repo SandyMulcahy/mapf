@@ -62,6 +62,7 @@ from ..protocol.context import (
 )
 from ..protocol.heatmap_delay import heatmap_delay
 from ..protocol.priority import next_age, next_since_goal, priority
+from ..protocol.tiebreak import order_candidates
 from ..protocol.tick_runner import ProtocolConfig
 from .base import Agent
 
@@ -208,7 +209,9 @@ class BiddingAgent(Agent):
         )
         self.current_priority = self.priority
 
-        self.candidates = sorted(pibt_candidates(self.grid, self.pos), key=self.distance)
+        self.candidates = order_candidates(
+            pibt_candidates(self.grid, self.pos), self.distance, ctx.t, self.agent_id, ctx.config
+        )
         return Bid(
             self.agent_id, None, self.pos, self.goal, self.priority,
             bid=self.bid, delay=self.delay, eps=self.eps,

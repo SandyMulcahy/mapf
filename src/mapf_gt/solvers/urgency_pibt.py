@@ -9,8 +9,10 @@ two choices made from outside:
   delay the agents compute (``protocol.heatmap_delay``, from the agents within
   ``comm_range``), eps_i counts timesteps since the agent was last at its goal
   (0 at the goal), and tier = 1 once eps_i >= emergency_wait;
-* pypibt's random tie-break shuffle is switched off, so ties keep its
-  neighbour order (stay, left, right, up, down).
+* pypibt's random tie-break shuffle is replaced by the protocol's keyed one
+  (``protocol/tiebreak.py``): off by default, so ties keep its neighbour order
+  (stay, left, right, up, down); with ``random_tiebreak`` the same draw per
+  (seed, tick, agent) as the agents.
 
 With truthful reports the decentralised protocol uses the same priorities. It
 produces exactly the same paths when every agent can hear every other
@@ -26,16 +28,29 @@ from typing import Sequence
 from ..maps.movingai import Cell, Instance
 from ..protocol.heatmap_delay import distances_to, heatmap_delay
 from ..protocol.priority import next_age, next_since_goal, priority
+from ..protocol.tiebreak import tiebreak_permutation
 from ..protocol.tick_runner import ProtocolConfig
 from ._pypibt import PIBT as _PIBT
 from .base import Solution, Solver
 
 
-class _NoShuffle:
-    """Stands in for pypibt's random generator: leaves candidate order alone."""
+class _KeyedShuffle:
+    """Stands in for pypibt's random generator. pypibt shuffles each agent's
+    candidates [stay, left, right, up, down] before its stable sort; this
+    applies the protocol's keyed permutation (``protocol/tiebreak.py``) instead,
+    so the oracle breaks ties exactly as the agents do (pypibt order when
+    ``random_tiebreak`` is off). The agent is found from the first candidate,
+    its current cell; ``t`` and ``owner`` are set before each step."""
+
+    def __init__(self, config: ProtocolConfig):
+        self.config = config
+        self.t = 0
+        self.owner: dict[Cell, int] = {}
 
     def shuffle(self, items) -> None:
-        pass
+        agent = self.owner[tuple(int(v) for v in items[0])]
+        order = tiebreak_permutation(len(items), self.t, agent, self.config)
+        items[:] = [items[k] for k in order]
 
 
 class UrgencyPIBT(Solver):
@@ -88,7 +103,7 @@ class UrgencyPIBT(Solver):
             list(instance.starts),
             list(instance.goals),
         )
-        planner.rng = _NoShuffle()
+        planner.rng = shuffler = _KeyedShuffle(self.config)
         goals = [tuple(goal) for goal in instance.goals]
         config = [tuple(cell) for cell in instance.starts]
         dist = [distances_to(instance.grid, goal) for goal in goals]
@@ -98,6 +113,8 @@ class UrgencyPIBT(Solver):
         configs = [config]
         while config != goals and len(configs) <= self.max_timestep:
             priorities = self.priorities(self.delays(instance, config), eps, since_goal)
+            shuffler.t = len(configs) - 1
+            shuffler.owner = {cell: i for i, cell in enumerate(config)}
             nxt = [tuple(int(v) for v in cell) for cell in planner.step(config, priorities)]
             eps = [
                 next_age(e, new == goal, d.get(new, far) < d.get(old, far), self.config)

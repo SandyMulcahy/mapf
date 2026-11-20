@@ -2,6 +2,11 @@
 
     python experiments/compare_rules.py                     # defaults below
     python experiments/compare_rules.py --rules A E --agents 10 20 --seeds 1 2 3
+    python experiments/compare_rules.py --rules E --tiebreak fixed random
+
+``--tiebreak random`` turns on the keyed random tie-break between equally
+short cells (protocol/tiebreak.py) with tiebreak_seed = the run's seed;
+``fixed`` is pypibt's order. Rows and summaries are per (rule, tie-break).
 
 Each (map, agents, seed) uses scenario file <map>-random-<seed>.scen and urgency
 draw <seed>, so every rule sees exactly the same instances. All agents are
@@ -37,18 +42,25 @@ RULES = {
     "E": dict(priority_rule="weighted", age_rule="since_goal", emergency_wait=None),
 }
 MAPS = ["empty-32-32", "random-32-32-20", "room-32-32-4", "maze-32-32-4", "warehouse-10-20-10-2-1"]
-FIELDS = ["rule", "map", "agents", "seed", "solved", "at_goal", "steps",
+TIEBREAKS = ("fixed", "random")
+FIELDS = ["rule", "tiebreak", "map", "agents", "seed", "solved", "at_goal", "steps",
           "sum_of_costs", "emergency_agent_ticks", "stall"]
 
 
 def run_one(job):
-    data, rule, name, k, seed, alpha, comm_range, max_steps = job
+    data, rule, tiebreak, name, k, seed, alpha, comm_range, max_steps = job
     instance = load_instance(
         data / "maps" / f"{name}.map",
         data / "scen-random" / "scen-random" / f"{name}-random-{seed}.scen",
         k,
     )
-    config = ProtocolConfig(alpha=alpha, comm_range=comm_range, **RULES[rule])
+    config = ProtocolConfig(
+        alpha=alpha,
+        comm_range=comm_range,
+        random_tiebreak=tiebreak == "random",
+        tiebreak_seed=seed,
+        **RULES[rule],
+    )
     run = run_protocol(
         instance,
         make_bidding_agents(instance, draw_urgencies(k, seed)),
@@ -58,6 +70,7 @@ def run_one(job):
     )
     return {
         "rule": rule,
+        "tiebreak": tiebreak,
         "map": name,
         "agents": k,
         "seed": seed,
@@ -77,6 +90,7 @@ def main() -> None:
     parser.add_argument("--rules", nargs="+", default=list(RULES), choices=list(RULES))
     parser.add_argument("--agents", nargs="+", type=int, default=[10, 20, 40, 60])
     parser.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
+    parser.add_argument("--tiebreak", nargs="+", default=["fixed"], choices=TIEBREAKS)
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--range", type=int, default=2, dest="comm_range")
     parser.add_argument("--max-steps", type=int, default=256)
@@ -85,8 +99,9 @@ def main() -> None:
     args = parser.parse_args()
 
     jobs = [
-        (args.data, rule, name, k, seed, args.alpha, args.comm_range, args.max_steps)
-        for name in args.maps for k in args.agents for seed in args.seeds for rule in args.rules
+        (args.data, rule, tiebreak, name, k, seed, args.alpha, args.comm_range, args.max_steps)
+        for name in args.maps for k in args.agents for seed in args.seeds
+        for rule in args.rules for tiebreak in args.tiebreak
     ]
     started = time.perf_counter()
     with Pool(args.workers) as pool:
@@ -104,11 +119,14 @@ def main() -> None:
     print(f"\nRuns solved, summed over {len(args.maps)} maps x {len(args.seeds)} seeds "
           f"(out of {total}), for {'/'.join(map(str, args.agents))} agents:")
     for rule in args.rules:
-        solved = [
-            sum(r["solved"] for r in rows if r["rule"] == rule and r["agents"] == k)
-            for k in args.agents
-        ]
-        print(f"  {rule}  " + "/".join(map(str, solved)))
+        for tiebreak in args.tiebreak:
+            solved = [
+                sum(r["solved"] for r in rows
+                    if r["rule"] == rule and r["tiebreak"] == tiebreak and r["agents"] == k)
+                for k in args.agents
+            ]
+            label = f"{rule} {tiebreak}" if len(args.tiebreak) > 1 else rule
+            print(f"  {label:<10}" + "/".join(map(str, solved)))
     stalls = sum(1 for r in rows if r["stall"])
     if stalls:
         print(f"\nWARNING: {stalls} runs stalled (protocol bug); see the stall column")

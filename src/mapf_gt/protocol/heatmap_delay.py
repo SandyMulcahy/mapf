@@ -17,7 +17,7 @@ With an empty heatmap and an open path this gives d_i = 1.
 Everything here uses public information only (the map, and positions and
 goals of agents within range), so any neighbour can recompute an agent's d_i.
 Parameters come from ``ProtocolConfig``: ``delay_horizon`` (k),
-``heat_follow_prob`` (p), ``heat_weight`` (lambda) and ``min_delay``.
+``heat_model``, ``heat_follow_prob`` (p), ``heat_weight`` (lambda) and ``min_delay``.
 """
 
 from __future__ import annotations
@@ -45,12 +45,63 @@ def predict_heatmap(
     ``config.delay_horizon``; entry t - 1 maps a cell to the expected number
     of these agents on it at step t. Cells not in a dict have heat 0.
 
-    PLACEHOLDER: predicts no congestion (all heat 0), so d_i is the plain
-    one-step cost of waiting. Replace with the goal-directed prediction
-    (follow a shortest path with probability ``config.heat_follow_prob``).
-    ``distances_to(grid, goal)`` below gives each neighbour's distance table.
+    Each neighbour is an independent Markov chain over its moves (stay or an
+    adjacent free cell); heat is the sum of their occupancy probabilities.
+    ``config.heat_model`` picks the move probabilities:
+
+    * ``"none"``: no heat at all (d_i is the plain one-step cost of waiting).
+    * ``"symmetric"`` (Keskin-style): every move equally likely; goals unused.
+    * ``"goal"``: probability p = ``config.heat_follow_prob`` split evenly over
+      the moves that minimise distance to the neighbour's goal, 1 - p split
+      evenly over the other moves (all to the shortest moves if there are none).
+
+    Neighbours on their goal get no special case in either model.
     """
-    return [{} for _ in range(config.delay_horizon)]
+    k = config.delay_horizon
+    model = config.heat_model
+    if model == "none":
+        return [{} for _ in range(k)]
+    if model == "symmetric":
+        transition = _symmetric_moves
+    elif model == "goal":
+        transition = _goal_moves
+    else:
+        raise ValueError(f"unknown heat_model {model!r}")
+
+    heat: Heatmap = [{} for _ in range(k)]
+    for pos, goal in neighbours:
+        dist = distances_to(grid, goal) if model == "goal" else None
+        here = {tuple(pos): 1.0}
+        for t in range(k):
+            nxt: dict[Cell, float] = {}
+            for cell, prob in here.items():
+                for move, share in transition(grid, cell, dist, config):
+                    nxt[move] = nxt.get(move, 0.0) + prob * share
+            for cell, prob in nxt.items():
+                heat[t][cell] = heat[t].get(cell, 0.0) + prob
+            here = nxt
+    return heat
+
+
+def _symmetric_moves(grid: GridMap, cell: Cell, dist, config) -> list[tuple[Cell, float]]:
+    """Every move (stay or a free neighbour) with equal probability."""
+    moves = _moves(grid, cell)
+    return [(move, 1.0 / len(moves)) for move in moves]
+
+
+def _goal_moves(grid: GridMap, cell: Cell, dist: dict[Cell, int], config) -> list[tuple[Cell, float]]:
+    """p over the moves closest to the goal, 1 - p over the rest, each split evenly."""
+    moves = _moves(grid, cell)
+    unreachable = grid.height * grid.width
+    best = min(dist.get(move, unreachable) for move in moves)
+    shortest = [move for move in moves if dist.get(move, unreachable) == best]
+    others = [move for move in moves if dist.get(move, unreachable) != best]
+    if not others:
+        return [(move, 1.0 / len(shortest)) for move in shortest]
+    p = config.heat_follow_prob
+    return [(move, p / len(shortest)) for move in shortest] + [
+        (move, (1.0 - p) / len(others)) for move in others
+    ]
 
 
 def heatmap_delay(

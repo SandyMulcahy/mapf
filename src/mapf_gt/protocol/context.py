@@ -146,6 +146,11 @@ class Context:
         return self._runner.config
 
     @property
+    def t(self) -> int:
+        """The current tick (public: every agent shares the clock)."""
+        return self._runner.t
+
+    @property
     def moves(self) -> dict[Cell, int]:
         """(d_row, d_col) -> POGEMA action index, from the installed POGEMA."""
         return self._runner.moves

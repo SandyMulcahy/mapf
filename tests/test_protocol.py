@@ -275,3 +275,158 @@ def test_whole_map_range_equals_urgency_pibt_for_other_rules(rule, k):
             max_episode_steps=200,
         )
         assert result.paths == oracle_paths(instance, urgencies, 200, **rule)
+
+
+# ------------------------------------------ heatmap models (predict_heatmap)
+
+HEAT_MODELS = ["symmetric", "goal"]
+
+
+def _heat(model, neighbours, map_name="toy-walls-8", **config):
+    from mapf_gt.protocol.heatmap_delay import predict_heatmap
+
+    grid = load_map(DATA / f"{map_name}.map")
+    return grid, predict_heatmap(grid, neighbours, ProtocolConfig(heat_model=model, **config))
+
+
+def test_no_heat_model_predicts_nothing():
+    _, heat = _heat("none", [((0, 0), (7, 7))])
+    assert heat == [{}, {}, {}]
+
+
+@pytest.mark.parametrize("model", HEAT_MODELS)
+def test_heatmap_has_k_steps_of_nonnegative_heat_on_free_cells(model):
+    neighbours = [((0, 0), (7, 7)), ((2, 2), (0, 3)), ((4, 4), (4, 4))]
+    grid, heat = _heat(model, neighbours, delay_horizon=5)
+    assert len(heat) == 5
+    for step in heat:
+        assert all(grid.is_free(cell) and value >= 0 for cell, value in step.items())
+        assert sum(step.values()) == pytest.approx(len(neighbours))  # mass is conserved
+
+
+@pytest.mark.parametrize("model", HEAT_MODELS)
+def test_step_one_heat_is_within_one_cell_of_a_neighbour(model):
+    neighbours = [((0, 0), (7, 7)), ((4, 4), (0, 0))]
+    _, heat = _heat(model, neighbours)
+    for (row, col) in heat[0]:
+        assert min(abs(row - r) + abs(col - c) for (r, c), _ in neighbours) <= 1
+
+
+def test_symmetric_heat_ignores_goals():
+    _, a = _heat("symmetric", [((3, 3), (0, 0))])
+    _, b = _heat("symmetric", [((3, 3), (7, 7))])
+    assert a == b
+    assert a[0] == {cell: pytest.approx(0.2) for cell in [(3, 3), (3, 2), (3, 4), (2, 3), (4, 3)]}
+
+
+def test_goal_heat_follows_the_shortest_path_with_probability_p():
+    # Empty map, goal straight to the right: one shortest move (right) gets p,
+    # the other four moves (stay, left, up, down) share 1 - p.
+    _, heat = _heat("goal", [((3, 3), (3, 6))], map_name="toy-empty-8", heat_follow_prob=0.8)
+    assert heat[0][(3, 4)] == pytest.approx(0.8)
+    for cell in [(3, 3), (3, 2), (2, 3), (4, 3)]:
+        assert heat[0][cell] == pytest.approx(0.05)
+
+
+def test_goal_heat_splits_p_over_tied_shortest_moves():
+    # Goal diagonal: right and down are equally short, so each gets p / 2.
+    _, heat = _heat("goal", [((3, 3), (5, 5))], map_name="toy-empty-8", heat_follow_prob=0.6)
+    assert heat[0][(3, 4)] == pytest.approx(0.3)
+    assert heat[0][(4, 3)] == pytest.approx(0.3)
+    assert heat[0][(3, 3)] == pytest.approx(0.4 / 3)
+
+
+def test_goal_heat_with_uniform_p_equals_symmetric_off_goal():
+    # p = 1/5 with one shortest move out of five gives every move 1/5.
+    neighbours = [((3, 3), (3, 6))]
+    _, goal = _heat("goal", neighbours, map_name="toy-empty-8", delay_horizon=1, heat_follow_prob=0.2)
+    _, symmetric = _heat("symmetric", neighbours, map_name="toy-empty-8", delay_horizon=1)
+    assert goal[0] == pytest.approx(symmetric[0])
+
+
+@pytest.mark.parametrize("model", HEAT_MODELS)
+def test_heat_on_the_route_raises_the_delay_and_ignores_urgency(model):
+    from mapf_gt.protocol.heatmap_delay import heatmap_delay
+
+    grid = load_map(DATA / "toy-empty-8.map")
+    config = ProtocolConfig(heat_model=model)
+    calm = heatmap_delay(grid, (3, 0), (3, 7), [], config)
+    # A neighbour ahead heading towards us changes the delay; the inputs hold no urgency.
+    busy = heatmap_delay(grid, (3, 0), (3, 7), [((3, 2), (3, 0))], config)
+    assert busy != pytest.approx(calm)
+
+
+@pytest.mark.parametrize("model", HEAT_MODELS)
+def test_heat_models_run_cleanly_and_match_the_oracle(model):
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", 6)
+    for seed in range(2):
+        urgencies = draw_urgencies(6, seed)
+        result = run_protocol(
+            instance,
+            make_bidding_agents(instance, urgencies),
+            config=ProtocolConfig(comm_range=14, heat_model=model),
+            seed=seed,
+            max_episode_steps=200,
+        )
+        assert find_protocol_problems(result) == []
+        assert result.paths == oracle_paths(instance, urgencies, 200, heat_model=model)
+
+
+# ----------------------------------------- random tie-break (protocol/tiebreak.py)
+
+
+def test_tiebreak_is_pypibt_order_unless_switched_on():
+    from mapf_gt.protocol.tiebreak import tiebreak_permutation
+
+    assert tiebreak_permutation(5, 3, 1, ProtocolConfig()) == [0, 1, 2, 3, 4]
+    on = ProtocolConfig(random_tiebreak=True)
+    draw = tiebreak_permutation(5, 3, 1, on)
+    assert sorted(draw) == [0, 1, 2, 3, 4]
+    assert tiebreak_permutation(5, 3, 1, on) == draw  # same key, same draw
+    others = {
+        tuple(tiebreak_permutation(5, t, i, ProtocolConfig(random_tiebreak=True, tiebreak_seed=s)))
+        for t in range(4) for i in range(4) for s in range(2)
+    }
+    assert len(others) > 1  # seed, tick and agent all feed the key
+
+
+def test_random_tiebreak_only_reorders_equally_short_cells():
+    from mapf_gt.protocol.tiebreak import order_candidates
+
+    grid = load_map(DATA / "toy-empty-8.map")
+    from mapf_gt.agents.bidding import pibt_candidates
+
+    # Goal diagonal from (3, 3): right and down tie at distance 3, the rest are 5.
+    dist = lambda v: abs(v[0] - 5) + abs(v[1] - 5)  # noqa: E731
+    firsts = set()
+    for t in range(20):
+        config = ProtocolConfig(random_tiebreak=True)
+        order = order_candidates(pibt_candidates(grid, (3, 3)), dist, t, 0, config)
+        assert [dist(v) for v in order] == sorted(dist(v) for v in order)
+        firsts.add(order[0])
+    assert firsts == {(3, 4), (4, 3)}
+
+
+@pytest.mark.parametrize("map_name", ["toy-empty-8", "toy-walls-8"])
+@pytest.mark.parametrize("tiebreak_seed", [0, 1, 2])
+def test_random_tiebreak_matches_the_oracle_and_reference_pibt(map_name, tiebreak_seed):
+    rule = {"random_tiebreak": True, "tiebreak_seed": tiebreak_seed}
+    instance = load_instance(DATA / f"{map_name}.map", DATA / f"{map_name}.scen", 8)
+    urgencies = draw_urgencies(8, tiebreak_seed)
+    result = run_protocol(
+        instance,
+        make_bidding_agents(instance, urgencies),
+        config=ProtocolConfig(comm_range=14, **rule),
+        seed=tiebreak_seed,
+        max_episode_steps=200,
+    )
+    assert find_protocol_problems(result, check_pibt=True) == []
+    assert result.paths == oracle_paths(instance, urgencies, 200, **rule)
+
+
+def test_random_tiebreak_changes_some_paths():
+    instance = load_instance(DATA / "toy-empty-8.map", DATA / "toy-empty-8.scen", 8)
+    urgencies = draw_urgencies(8, 0)
+    fixed = oracle_paths(instance, urgencies, 200)
+    shuffled = [oracle_paths(instance, urgencies, 200, random_tiebreak=True, tiebreak_seed=s) for s in range(3)]
+    assert any(paths != fixed for paths in shuffled)
