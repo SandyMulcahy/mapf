@@ -19,8 +19,8 @@ src/mapf_gt/
   protocol/context.py     what an agent may see and send: public view, messages
   protocol/tick_runner.py the clock and the radio: event ordering for one tick
   protocol/priority.py    priority and ageing rules (default: rule E), shared with the oracle
-  protocol/heatmap_delay.py public delay d_i from a heatmap (heat_model: none, symmetric, goal)
-  protocol/tiebreak.py    candidate order: pypibt order, or keyed random tie-break (random_tiebreak)
+  protocol/heatmap_delay.py public delay d_i from a heatmap (heat_model: none, symmetric, goal, keskin)
+  protocol/tiebreak.py    candidate order: pypibt order, keyed random tie-break (random_tiebreak), free cells first (tiebreak_prefer_free)
   protocol/payments.py    per-tick payments (placeholder: everyone pays 0)
   solvers/cbs.py          optimal CBS in pure Python, for small instances
   solvers/pibt.py         wrapper for a Python implementation of PIBT

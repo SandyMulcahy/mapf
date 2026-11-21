@@ -197,9 +197,10 @@ class BiddingAgent(Agent):
         #b_i = c_i * truthful multiplier
         self.bid = self.multiplier * self.urgency
         #d_i calculated by public info heatmap
+        views = ctx.neighbours()
         self.delay = heatmap_delay(
             self.grid, self.pos, self.goal,
-            [(v.pos, v.goal) for v in ctx.neighbours()],
+            [(v.pos, v.goal) for v in views],
             ctx.config,
         )
 
@@ -210,7 +211,8 @@ class BiddingAgent(Agent):
         self.current_priority = self.priority
 
         self.candidates = order_candidates(
-            pibt_candidates(self.grid, self.pos), self.distance, ctx.t, self.agent_id, ctx.config
+            pibt_candidates(self.grid, self.pos), self.distance, ctx.t, self.agent_id, ctx.config,
+            occupied={tuple(v.pos) for v in views},
         )
         return Bid(
             self.agent_id, None, self.pos, self.goal, self.priority,
@@ -338,6 +340,17 @@ def draw_urgencies(n: int, seed: int, low: float = 1.0, high: float = 10.0) -> l
     """n urgencies drawn uniformly from [low, high], reproducible from ``seed``."""
     rng = random.Random(seed)
     return [rng.uniform(low, high) for _ in range(n)]
+
+
+def draw_multipliers(n: int, liar_fraction: float, multiplier: float, seed: int) -> list[float]:
+    """Bid multipliers for n agents: round(liar_fraction * n) of them, chosen at
+    random from ``seed``, bid ``multiplier`` times their urgency; the rest are
+    truthful (1.0). Uses its own random stream, so the urgencies drawn from the
+    same seed are unaffected."""
+    if not 0.0 <= liar_fraction <= 1.0:
+        raise ValueError(f"liar_fraction must be in [0, 1], got {liar_fraction}")
+    liars = set(random.Random(f"liars:{seed}").sample(range(n), round(liar_fraction * n)))
+    return [multiplier if i in liars else 1.0 for i in range(n)]
 
 
 def make_bidding_agents(

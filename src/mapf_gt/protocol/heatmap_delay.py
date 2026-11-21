@@ -29,6 +29,9 @@ from ..maps.movingai import Cell, GridMap
 
 Heatmap = list[dict[Cell, float]]  # heat[t - 1][cell] = expected agents on cell at step t
 
+# Radius of the "keskin" kernel, in moves.
+KESKIN_RADIUS = 2
+
 # pypibt's neighbour order: left, right, up, down, as (d_row, d_col).
 _ORDER: tuple[Cell, ...] = ((0, -1), (0, 1), (-1, 0), (1, 0))
 
@@ -54,13 +57,36 @@ def predict_heatmap(
     * ``"goal"``: probability p = ``config.heat_follow_prob`` split evenly over
       the moves that minimise distance to the neighbour's goal, 1 - p split
       evenly over the other moves (all to the shortest moves if there are none).
+    * ``"keskin"``: not a Markov chain but a kernel that slides along each
+      neighbour's expected path. The centre starts on the neighbour's cell and
+      moves one step per t to its candidate closest to the neighbour's goal
+      (BFS distance; ties in pypibt order: stay, left, right, up, down), so
+      at step t it is t moves along a shortest path, and stays on the goal
+      once there. Around the centre, a cell at move distance delta <= r
+      (through free cells, r = ``KESKIN_RADIUS`` = 2) gets weight
+      1 - delta / (r + 1), i.e. 1, 2/3, 1/3, divided by that kernel's total,
+      so each neighbour contributes exactly 1 per step (near walls the heat
+      concentrates on fewer cells).
 
-    Neighbours on their goal get no special case in either model.
+    Neighbours on their goal get no special case in any model (in "keskin"
+    the centre simply stays there).
     """
     k = config.delay_horizon
     model = config.heat_model
     if model == "none":
         return [{} for _ in range(k)]
+    if model == "keskin":
+        heat: Heatmap = [{} for _ in range(k)]
+        unreachable = grid.height * grid.width
+        for pos, goal in neighbours:
+            dist = distances_to(grid, goal)
+            centre = tuple(pos)
+            for t in range(k):
+                # min keeps the first of equals, i.e. pypibt's order.
+                centre = min(_moves(grid, centre), key=lambda v: dist.get(v, unreachable))
+                for cell, share in _keskin_kernel(grid, centre).items():
+                    heat[t][cell] = heat[t].get(cell, 0.0) + share
+        return heat
     if model == "symmetric":
         transition = _symmetric_moves
     elif model == "goal":
@@ -81,6 +107,15 @@ def predict_heatmap(
                 heat[t][cell] = heat[t].get(cell, 0.0) + prob
             here = nxt
     return heat
+
+
+def _keskin_kernel(grid: GridMap, centre: Cell) -> dict[Cell, float]:
+    """Linear-decay kernel around ``centre`` (weights 1 - delta / (r + 1) by
+    move distance delta <= r), normalised to sum to 1."""
+    around = _cells_within(grid, centre, KESKIN_RADIUS)
+    weight = {cell: 1.0 - delta / (KESKIN_RADIUS + 1) for cell, delta in around.items()}
+    total = sum(weight.values())
+    return {cell: w / total for cell, w in weight.items()}
 
 
 def _symmetric_moves(grid: GridMap, cell: Cell, dist, config) -> list[tuple[Cell, float]]:
@@ -153,8 +188,8 @@ def _moves(grid: GridMap, cell: Cell) -> list[Cell]:
     return out
 
 
-def _cells_within(grid: GridMap, start: Cell, k: int) -> list[Cell]:
-    """Free cells reachable from ``start`` in at most k moves."""
+def _cells_within(grid: GridMap, start: Cell, k: int) -> dict[Cell, int]:
+    """Free cells reachable from ``start`` in at most k moves, with their move distance."""
     seen = {start: 0}
     queue = deque([start])
     while queue:
@@ -165,7 +200,7 @@ def _cells_within(grid: GridMap, start: Cell, k: int) -> list[Cell]:
             if nxt not in seen:
                 seen[nxt] = seen[cell] + 1
                 queue.append(nxt)
-    return list(seen)
+    return seen
 
 
 _DIST_CACHE: dict[tuple[int, Cell], tuple[GridMap, dict[Cell, int]]] = {}

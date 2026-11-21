@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 from .maps.movingai import Cell, GridMap, Instance
-from .protocol.tiebreak import tiebreak_permutation
+from .protocol.tiebreak import tiebreak_order
 
 if TYPE_CHECKING:
     from .rollout import RunResult
@@ -190,8 +190,8 @@ def reference_pibt_step(
         around = [(row, col - 1), (row, col + 1), (row - 1, col), (row + 1, col)]
         candidates = [here, *(v for v in around if grid.is_free(v))]
         if config is not None:
-            order = tiebreak_permutation(len(candidates), t, i, config)
-            candidates = [candidates[k] for k in order]
+            others = {cell for cell in occupied_now if cell != here}
+            candidates = tiebreak_order(candidates, t, i, config, others)
         candidates = sorted(candidates, key=lambda v: dist.get(v, unreachable))
         for v in candidates:
             if v in occupied_next:

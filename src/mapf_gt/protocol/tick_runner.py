@@ -67,7 +67,7 @@ class ProtocolConfig:
     activation_cap: int = 100_000  # per tick, guards against livelock bugs
     # Heatmap delay d_i (protocol/heatmap_delay.py)
     delay_horizon: int = 3  # k: steps looked ahead
-    heat_model: str = "none"  # "none": no heat; "symmetric": uniform moves (Keskin); "goal": follow shortest path w.p. p
+    heat_model: str = "none"  # "none": no heat; "symmetric": uniform moves (Keskin); "goal": follow shortest path w.p. p; "keskin": radius-2 kernel sliding along the path
     heat_follow_prob: float = 0.8  # p: chance a neighbour follows its shortest path ("goal" only)
     heat_weight: float = 1.0  # lambda: cost per expected agent on a cell
     min_delay: float = 0.1  # floor on d_i, so an urgency always counts a little
@@ -78,6 +78,7 @@ class ProtocolConfig:
     # Tie-break between equally short cells (protocol/tiebreak.py).
     random_tiebreak: bool = False  # False: pypibt order; True: shuffled per (seed, tick, agent)
     tiebreak_seed: int = 0
+    tiebreak_prefer_free: bool = False  # True: among equally short cells, prefer ones no other agent holds (PIBT)
 
 
 @dataclass(frozen=True)

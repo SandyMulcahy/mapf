@@ -28,7 +28,7 @@ from typing import Sequence
 from ..maps.movingai import Cell, Instance
 from ..protocol.heatmap_delay import distances_to, heatmap_delay
 from ..protocol.priority import next_age, next_since_goal, priority
-from ..protocol.tiebreak import tiebreak_permutation
+from ..protocol.tiebreak import tiebreak_order
 from ..protocol.tick_runner import ProtocolConfig
 from ._pypibt import PIBT as _PIBT
 from .base import Solution, Solver
@@ -39,8 +39,10 @@ class _KeyedShuffle:
     candidates [stay, left, right, up, down] before its stable sort; this
     applies the protocol's keyed permutation (``protocol/tiebreak.py``) instead,
     so the oracle breaks ties exactly as the agents do (pypibt order when
-    ``random_tiebreak`` is off). The agent is found from the first candidate,
-    its current cell; ``t`` and ``owner`` are set before each step."""
+    ``random_tiebreak`` is off; free cells before occupied ones when
+    ``tiebreak_prefer_free`` is on, which survives pypibt's stable sort by
+    distance). The agent is found from the first candidate, its current cell;
+    ``t`` and ``owner`` are set before each step."""
 
     def __init__(self, config: ProtocolConfig):
         self.config = config
@@ -48,9 +50,13 @@ class _KeyedShuffle:
         self.owner: dict[Cell, int] = {}
 
     def shuffle(self, items) -> None:
-        agent = self.owner[tuple(int(v) for v in items[0])]
-        order = tiebreak_permutation(len(items), self.t, agent, self.config)
-        items[:] = [items[k] for k in order]
+        cells = [tuple(int(v) for v in item) for item in items]
+        here = cells[0]
+        agent = self.owner[here]
+        occupied = {cell for cell in self.owner if cell != here}
+        ordered = tiebreak_order(cells, self.t, agent, self.config, occupied)
+        lookup = dict(zip(cells, items))
+        items[:] = [lookup[cell] for cell in ordered]
 
 
 class UrgencyPIBT(Solver):

@@ -430,3 +430,148 @@ def test_random_tiebreak_changes_some_paths():
     fixed = oracle_paths(instance, urgencies, 200)
     shuffled = [oracle_paths(instance, urgencies, 200, random_tiebreak=True, tiebreak_seed=s) for s in range(3)]
     assert any(paths != fixed for paths in shuffled)
+
+
+# ------------------------------------- keskin radius-2 kernel, sliding along the path
+
+
+def _peak(step):
+    return max(step, key=step.get)
+
+
+def test_keskin_kernel_slides_one_step_per_tick_with_open_space_values():
+    _, heat = _heat("keskin", [((3, 3), (3, 7))], map_name="toy-empty-8", delay_horizon=3)
+    z = 1 + 4 * (2 / 3) + 8 * (1 / 3)  # 19/3 in open space
+    assert [_peak(step) for step in heat] == [(3, 4), (3, 5), (3, 6)]
+    assert heat[0][(3, 4)] == pytest.approx(1 / z)
+    assert heat[0][(3, 5)] == pytest.approx((2 / 3) / z)
+    assert heat[0][(4, 5)] == pytest.approx((1 / 3) / z)
+    assert (3, 7) not in heat[0]  # 3 moves from the step-1 centre
+    for step in heat:
+        assert sum(step.values()) == pytest.approx(1.0)  # 1 per neighbour per step
+
+
+def test_keskin_centre_breaks_ties_in_pypibt_order_and_stops_at_goal():
+    # Goal diagonal: right and down tie, pypibt order (left, right, up, down) takes right.
+    _, heat = _heat("keskin", [((3, 3), (5, 5))], map_name="toy-empty-8")
+    assert [_peak(step) for step in heat] == [(3, 4), (3, 5), (4, 5)]
+    # One move from the goal: the centre reaches it at t = 1 and stays.
+    _, near = _heat("keskin", [((3, 3), (3, 4))], map_name="toy-empty-8")
+    assert [_peak(step) for step in near] == [(3, 4)] * 3
+    assert near[0] == near[1] == near[2]
+
+
+def test_keskin_uses_goals_and_concentrates_near_walls():
+    _, a = _heat("keskin", [((3, 3), (0, 0))], map_name="toy-empty-8")
+    _, b = _heat("keskin", [((3, 3), (7, 7))], map_name="toy-empty-8")
+    assert a != b
+    _, corner = _heat("keskin", [((0, 0), (0, 0))], map_name="toy-empty-8")
+    _, middle = _heat("keskin", [((3, 3), (3, 3))], map_name="toy-empty-8")
+    assert sum(corner[0].values()) == pytest.approx(1.0)
+    assert corner[0][(0, 0)] > middle[0][(3, 3)]  # fewer cells, so more heat on each
+
+
+def test_keskin_distance_is_through_free_cells():
+    # toy-walls-8 row 1 is ".@@..@@.": (0, 1) and (2, 1) are 2 apart in Manhattan
+    # distance but 4 moves apart round the wall at (1, 1), so no heat crosses it.
+    grid, heat = _heat("keskin", [((0, 1), (0, 1))])  # on its goal: centre stays
+    assert not grid.is_free((1, 1))
+    assert (2, 1) not in heat[0]
+    assert all(grid.is_free(cell) for step in heat for cell in step)
+
+
+def test_keskin_heat_model_runs_cleanly_and_matches_the_oracle():
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", 6)
+    for seed in range(2):
+        urgencies = draw_urgencies(6, seed)
+        result = run_protocol(
+            instance,
+            make_bidding_agents(instance, urgencies),
+            config=ProtocolConfig(comm_range=14, heat_model="keskin"),
+            seed=seed,
+            max_episode_steps=200,
+        )
+        assert find_protocol_problems(result) == []
+        assert result.paths == oracle_paths(instance, urgencies, 200, heat_model="keskin")
+
+
+# ------------------------------------------------ deceptive bidders (multipliers)
+
+
+def test_draw_multipliers_picks_a_seeded_fraction_of_liars():
+    from mapf_gt.agents.bidding import draw_multipliers
+
+    assert draw_multipliers(8, 0.0, 4.0, 1) == [1.0] * 8
+    assert draw_multipliers(8, 1.0, 4.0, 1) == [4.0] * 8
+    drawn = draw_multipliers(8, 0.25, 4.0, 1)
+    assert sorted(drawn) == [1.0] * 6 + [4.0] * 2
+    assert draw_multipliers(8, 0.25, 4.0, 1) == drawn  # same seed, same liars
+    assert len({tuple(draw_multipliers(8, 0.25, 4.0, s)) for s in range(10)}) > 1
+    with pytest.raises(ValueError):
+        draw_multipliers(8, 1.5, 4.0, 1)
+
+
+def test_liars_bid_their_multiplier_times_urgency_and_run_cleanly():
+    from mapf_gt.agents.bidding import draw_multipliers
+
+    instance = load_instance(DATA / "toy-walls-8.map", DATA / "toy-walls-8.scen", 6)
+    urgencies = draw_urgencies(6, 2)
+    multipliers = draw_multipliers(6, 0.5, 4.0, 2)
+    result = run_protocol(
+        instance,
+        make_bidding_agents(instance, urgencies, multipliers),
+        config=ProtocolConfig(),
+        seed=2,
+        max_episode_steps=200,
+    )
+    assert find_protocol_problems(result) == []
+    for tick in result.ticks:
+        assert list(tick.bids) == pytest.approx([m * c for m, c in zip(multipliers, urgencies)])
+
+
+# --------------------------------------- prefer-free tie-break (PIBT, protocol/tiebreak.py)
+
+
+def test_prefer_free_puts_unoccupied_cells_first_among_ties_only():
+    from mapf_gt.agents.bidding import pibt_candidates
+    from mapf_gt.protocol.tiebreak import order_candidates
+
+    grid = load_map(DATA / "toy-empty-8.map")
+    dist = lambda v: abs(v[0] - 5) + abs(v[1] - 5)  # noqa: E731  goal (5, 5): right and down tie
+    cells = pibt_candidates(grid, (3, 3))
+    plain = order_candidates(cells, dist, 0, 0, ProtocolConfig(), occupied={(3, 4)})
+    assert plain[0] == (3, 4)  # pypibt order: right before down
+    free = order_candidates(cells, dist, 0, 0, ProtocolConfig(tiebreak_prefer_free=True), occupied={(3, 4)})
+    assert free[:2] == [(4, 3), (3, 4)]  # occupied right moves behind free down
+    # A strictly shorter cell still comes first even if it is occupied.
+    near = lambda v: abs(v[0] - 3) + abs(v[1] - 5)  # noqa: E731  goal (3, 5): only right is shortest
+    assert order_candidates(cells, near, 0, 0, ProtocolConfig(tiebreak_prefer_free=True), occupied={(3, 4)})[0] == (3, 4)
+
+
+@pytest.mark.parametrize("map_name", ["toy-empty-8", "toy-walls-8"])
+@pytest.mark.parametrize("random_tiebreak", [False, True])
+def test_prefer_free_matches_the_oracle_and_reference_pibt(map_name, random_tiebreak):
+    rule = {"tiebreak_prefer_free": True, "random_tiebreak": random_tiebreak, "tiebreak_seed": 1}
+    instance = load_instance(DATA / f"{map_name}.map", DATA / f"{map_name}.scen", 8)
+    for seed in range(2):
+        urgencies = draw_urgencies(8, seed)
+        result = run_protocol(
+            instance,
+            make_bidding_agents(instance, urgencies),
+            config=ProtocolConfig(comm_range=14, **rule),
+            seed=seed,
+            max_episode_steps=200,
+        )
+        assert find_protocol_problems(result, check_pibt=True) == []
+        assert result.paths == oracle_paths(instance, urgencies, 200, **rule)
+
+
+def test_prefer_free_changes_some_paths():
+    instance = load_instance(DATA / "toy-empty-8.map", DATA / "toy-empty-8.scen", 8)
+    changed = False
+    for seed in range(4):
+        urgencies = draw_urgencies(8, seed)
+        changed |= oracle_paths(instance, urgencies, 200) != oracle_paths(
+            instance, urgencies, 200, tiebreak_prefer_free=True
+        )
+    assert changed
